@@ -2,22 +2,43 @@
 
 (defclass rnn-cell (layer)
   ((input-size :initarg :input-size
+	       :initarg :input-size
 	       :reader rnn-input-size)
    (hidden-size :initarg :hidden-size
+		:initarg :hidden-size
 		:reader rnn-hidden-size)
    (activation :initarg :activation
 	       :initform :tanh
 	       :reader rnn-activation)
-   (wih :accessor rnn-wih)
-   (whh :accessor rnn-whh)
-   (bih :accessor rnn-bih)
-   (dwih :accessor rnn-dwih)
-   (dwhh :accessor rnn-dwhh)
-   (dbih :accessor rnn-dbih)
-   (input-cache :accessor rnn-input-cache)
-   (h-prev-cache :accessor rnn-h-prev-cache)
-   (h-cache :accessor rnn-h-cache))
-  (:documentation "h_t = act(x_t @ W_ih + h_{t-1} @ W_hh + b_ih)"))
+   (wih :initarg :wih
+	:initform nil
+	:accessor rnn-wih)
+   (whh :initarg :whh
+	:initform nil
+	:accessor rnn-whh)
+   (bih :initarg :bih
+	:initform nil
+	:accessor rnn-bih)
+   (dwih :initarg :dwih
+	 :initform nil
+	 :accessor rnn-dwih)
+   (dwhh :initarg :dwhh
+	 :initform nil
+	 :accessor rnn-dwhh)
+   (dbih :initarg :dbih
+	 :initform nil
+	 :accessor rnn-dbih)
+   (input-cache :initarg :input-cache
+		:initform nil
+		:accessor rnn-input-cache)
+   (h-prev-cache :initarg :h-prev-cache
+		 :initform nil
+		 :accessor rnn-h-prev-cache)
+   (h-cache :initarg :h-cache
+	    :initform nil
+	    :accessor rnn-h-cache))
+  (:documentation
+   "h_t = act(x_t @ W_ih.T + h_{t-1} @ W_hh.T + b_ih)"))
 
 (defun make-rnn-cell (input-size hidden-size
                       &key activation (name "rnn-cell") (trainable t))
@@ -25,14 +46,14 @@
 		 :input-size input-size
 		 :hidden-size hidden-size
 		 :activation (or activation :tanh)
-		 :name name
-		 :trainable trainable))
+		 :name name :trainable trainable))
 
 (defun ensure-rnn-cell-params (l)
   (unless (rnn-wih l)
-    (let ((is (rnn-input-size l)) (hs (rnn-hidden-size l)))
+    (let ((is (rnn-input-size l))
+          (hs (rnn-hidden-size l)))
       (setf (rnn-wih l)
-            (vt-scale (vt-random-normal (list is hs))
+            (vt-scale (vt-random-normal (list hs is))
                       (sqrt (/ 1.0d0 is))))
       (setf (rnn-whh l)
             (vt-scale (vt-random-normal (list hs hs))
@@ -42,14 +63,14 @@
 (defmethod forward ((l rnn-cell) input)
   (ensure-rnn-cell-params l)
   (let* ((x (if (= (length (vt-shape input)) 1)
-                (vt-reshape input
-                            (list 1 (rnn-input-size l)))
+                (vt-reshape input (list 1 (rnn-input-size l)))
                 input))
          (batch (first (vt-shape x)))
          (h-prev (vt-zeros (list batch (rnn-hidden-size l))))
-         (pre-act (vt-+ (vt-+ (vt-matmul x (rnn-wih l))
-                              (vt-matmul h-prev (rnn-whh l)))
-                        (rnn-bih l)))
+         (pre-act
+           (vt-+ (vt-+ (vt-matmul x (vt-transpose (rnn-wih l)))
+                       (vt-matmul h-prev (vt-transpose (rnn-whh l))))
+                 (rnn-bih l)))
          (h (ecase (rnn-activation l)
               ((:tanh tanh) (vt-tanh pre-act))
               ((:relu relu) (vt-relu pre-act)))))
@@ -60,9 +81,10 @@
 
 (defun rnn-cell-step (l x h-prev)
   (ensure-rnn-cell-params l)
-  (let* ((pre-act (vt-+ (vt-+ (vt-matmul x (rnn-wih l))
-                              (vt-matmul h-prev (rnn-whh l)))
-                        (rnn-bih l)))
+  (let* ((pre-act
+           (vt-+ (vt-+ (vt-matmul x (vt-transpose (rnn-wih l)))
+                       (vt-matmul h-prev (vt-transpose (rnn-whh l))))
+                 (rnn-bih l)))
          (h (ecase (rnn-activation l)
               ((:tanh tanh) (vt-tanh pre-act))
               ((:relu relu) (vt-relu pre-act)))))
@@ -73,51 +95,71 @@
          (h-prev (rnn-h-prev-cache l))
          (h (rnn-h-cache l))
          (wih (rnn-wih l))
+         (whh (rnn-whh l))
          (d-act (ecase (rnn-activation l)
                   ((:tanh tanh) (vt-- 1.0d0 (vt-* h h)))
                   ((:relu relu) (vt-relu-derivative h))))
          (dh (vt-* grad-output d-act))
-         (dwih (vt-matmul (vt-transpose x) dh))
-         (dwhh (vt-matmul (vt-transpose h-prev) dh))
+         (dwih (vt-matmul (vt-transpose dh) x))
+         (dwhh (vt-matmul (vt-transpose dh) h-prev))
          (dbih (vt-sum dh :axis 0))
-         (dx (vt-matmul dh (vt-transpose wih))))
+         (dx (vt-matmul dh wih))
+         (dh-prev (vt-matmul dh whh)))
     (setf (rnn-dwih l)
           (if (rnn-dwih l) (vt-+ (rnn-dwih l) dwih) dwih))
     (setf (rnn-dwhh l)
           (if (rnn-dwhh l) (vt-+ (rnn-dwhh l) dwhh) dwhh))
     (setf (rnn-dbih l)
           (if (rnn-dbih l) (vt-+ (rnn-dbih l) dbih) dbih))
-    dx))
-
+    (values dx dh-prev)))
 
 (defmethod params ((l rnn-cell))
   (list (list "wih" (rnn-wih l)
-	      #'(lambda (v) (setf (rnn-wih l) v)))
+              #'(lambda (v) (setf (rnn-wih l) v)))
         (list "whh" (rnn-whh l)
-	      #'(lambda (v) (setf (rnn-whh l) v)))
+              #'(lambda (v) (setf (rnn-whh l) v)))
         (list "bih" (rnn-bih l)
-	      #'(lambda (v) (setf (rnn-bih l) v)))))
+              #'(lambda (v) (setf (rnn-bih l) v)))))
 
 (defmethod grads ((l rnn-cell))
   (list (cons "wih" (rnn-dwih l))
         (cons "whh" (rnn-dwhh l))
         (cons "bih" (rnn-dbih l))))
 
-
 (defclass lstm (layer)
   ((input-size :initarg :input-size
+	       :initform nil
 	       :reader lstm-input-size)
    (hidden-size :initarg :hidden-size
+		:initform nil
 		:reader lstm-hidden-size)
-   (weight-ih :accessor lstm-weight-ih)
-   (weight-hh :accessor lstm-weight-hh)
-   (bias-ih :accessor lstm-bias-ih)
-   (bias-hh :accessor lstm-bias-hh)
-   (dweight-ih :accessor lstm-dweight-ih)
-   (dweight-hh :accessor lstm-dweight-hh)
-   (dbias-ih :accessor lstm-dbias-ih)
-   (dbias-hh :accessor lstm-dbias-hh)
-   (cache :accessor lstm-cache))
+   (weight-ih :initarg :weight-ih
+	      :initform nil
+	      :accessor lstm-weight-ih)
+   (weight-hh :initarg :weight-hh
+	      :initform nil
+	      :accessor lstm-weight-hh)
+   (bias-ih :initarg :bias-ih
+	    :initform nil
+	    :accessor lstm-bias-ih)
+   (bias-hh :initarg :bias-hh
+	    :initform nil
+	    :accessor lstm-bias-hh)
+   (dweight-ih :initarg :dweight-ih
+	       :initform nil
+	       :accessor lstm-dweight-ih)
+   (dweight-hh :initarg :dweight-hh
+	       :initform nil
+	       :accessor lstm-dweight-hh)
+   (dbias-ih :initarg :dbias-ih
+	     :initform nil
+	     :accessor lstm-dbias-ih)
+   (dbias-hh :initarg :dbias-hh
+	     :initform nil
+	     :accessor lstm-dbias-hh)
+   (cache :initarg :cache
+	  :initform nil
+	  :accessor lstm-cache))
   (:documentation "LSTM"))
 
 (defun make-lstm (input-size hidden-size
@@ -125,8 +167,7 @@
   (make-instance 'lstm
 		 :input-size input-size
 		 :hidden-size hidden-size
-		 :name name
-		 :trainable trainable))
+		 :name name :trainable trainable))
 
 (defun ensure-lstm-params (l)
   (unless (lstm-weight-ih l)
@@ -142,7 +183,7 @@
       (let ((b-ih (vt-zeros (list gate-size)))
             (b-hh (vt-zeros (list gate-size))))
         (dotimes (i hs)
-          (setf (vt-ref b-ih (list (+ hs i))) 1.0d0))
+          (setf (vt-ref b-ih (+ hs i)) 1.0d0))
         (setf (lstm-bias-ih l) b-ih)
         (setf (lstm-bias-hh l) b-hh)))))
 
@@ -163,14 +204,15 @@
          (all-h '()) (all-x '()))
     (dotimes (i seq-len)
       (let* ((x-t (vt-slice input :all i :all))
-             (gates (vt-+ (vt-+ (vt-matmul x-t wih)
-                                (vt-matmul h whh))
-                          (vt-+ bih bhh)))
+             (gates
+               (vt-+ (vt-+
+                      (vt-matmul x-t (vt-transpose wih))
+                      (vt-matmul h (vt-transpose whh)))
+                     (vt-+ bih bhh)))
              (i-gate (vt-sigmoid
                       (vt-slice gates :all (list 0 hs))))
              (f-gate (vt-sigmoid
-                      (vt-slice gates
-                                :all `(,hs ,(* 2 hs)))))
+                      (vt-slice gates :all `(,hs ,(* 2 hs)))))
              (g-gate (vt-tanh
                       (vt-slice gates
                                 :all `(,(* 2 hs) ,(* 3 hs)))))
@@ -245,28 +287,25 @@
              (do-g (vt-* dh tanh-c
                          (vt-* o-gate (vt-- 1.0d0 o-gate))))
              (d-gates (vt-concatenate -1
-                                      di df dg do-g)))
+				      di df dg do-g)))
         (setf dwih-acc
               (vt-+ dwih-acc
-                    (vt-transpose
-                     (vt-matmul (vt-transpose x-t)
-                                d-gates))))
+                    (vt-matmul
+                     (vt-transpose d-gates) x-t)))
         (let ((h-prev (if (= idx 0)
                           zero-h
                           (nth (1- idx) all-h))))
           (setf dwhh-acc
                 (vt-+ dwhh-acc
-                      (vt-transpose
-                       (vt-matmul (vt-transpose h-prev)
-                                  d-gates)))))
+                      (vt-matmul
+                       (vt-transpose d-gates) h-prev))))
         (setf dbih-acc
               (vt-+ dbih-acc (vt-sum d-gates :axis 0)))
         (setf dbhh-acc
               (vt-+ dbhh-acc (vt-sum d-gates :axis 0)))
-        (setf dh-next
-              (vt-matmul d-gates (vt-transpose whh)))
+        (setf dh-next (vt-matmul d-gates whh))
         (setf (vt-slice grad-input :all idx :all)
-              (vt-matmul d-gates (vt-transpose wih)))
+              (vt-matmul d-gates wih))
         (setf dc-next (vt-* dc f-gate))))
     (setf (lstm-dweight-ih l) dwih-acc)
     (setf (lstm-dweight-hh l) dwhh-acc)
@@ -276,13 +315,13 @@
 
 (defmethod params ((l lstm))
   (list (list "weight_ih" (lstm-weight-ih l)
-	      #'(lambda (v) (setf (lstm-weight-ih l) v)))
+              #'(lambda (v) (setf (lstm-weight-ih l) v)))
         (list "weight_hh" (lstm-weight-hh l)
-	      #'(lambda (v) (setf (lstm-weight-hh l) v)))
+              #'(lambda (v) (setf (lstm-weight-hh l) v)))
         (list "bias_ih" (lstm-bias-ih l)
-	      #'(lambda (v) (setf (lstm-bias-ih l) v)))
+              #'(lambda (v) (setf (lstm-bias-ih l) v)))
         (list "bias_hh" (lstm-bias-hh l)
-	      #'(lambda (v) (setf (lstm-bias-hh l) v)))))
+              #'(lambda (v) (setf (lstm-bias-hh l) v)))))
 
 (defmethod grads ((l lstm))
   (list (cons "weight_ih" (lstm-dweight-ih l))
@@ -290,21 +329,40 @@
         (cons "bias_ih" (lstm-dbias-ih l))
         (cons "bias_hh" (lstm-dbias-hh l))))
 
-
 (defclass gru (layer)
-  ((input-size :initarg :input-size
+  ((input-size :initform nil
+	       :initarg :input-size
 	       :reader gru-input-size)
-   (hidden-size :initarg :hidden-size
+   (hidden-size :initform nil
+		:initarg :hidden-size
 		:reader gru-hidden-size)
-   (weight-ih :accessor gru-weight-ih)
-   (weight-hh :accessor gru-weight-hh)
-   (bias-ih :accessor gru-bias-ih)
-   (bias-hh :accessor gru-bias-hh)
-   (dweight-ih :accessor gru-dweight-ih)
-   (dweight-hh :accessor gru-dweight-hh)
-   (dbias-ih :accessor gru-dbias-ih)
-   (dbias-hh :accessor gru-dbias-hh)
-   (cache :accessor gru-cache))
+   (weight-ih :initform nil
+	      :initarg :weight-ih
+	      :accessor gru-weight-ih)
+   (weight-hh :initform nil
+	      :initarg :weight-hh
+	      :accessor gru-weight-hh)
+   (bias-ih :initform nil
+	    :initarg :bias-ih
+	    :accessor gru-bias-ih)
+   (bias-hh :initform nil
+	    :initarg :bias-hh
+	    :accessor gru-bias-hh)
+   (dweight-ih :initform nil
+	       :initarg :dweight-ih
+	       :accessor gru-dweight-ih)
+   (dweight-hh :initform nil
+	       :initarg :dweight-hh
+	       :accessor gru-dweight-hh)
+   (dbias-ih :initform nil
+	     :initarg :dbias-ih
+	     :accessor gru-dbias-ih)
+   (dbias-hh :initform nil
+	     :initarg :dbias-hh
+	     :accessor gru-dbias-hh)
+   (cache :initform nil
+	  :initarg :cache
+	  :accessor gru-cache))
   (:documentation "GRU"))
 
 (defun make-gru (input-size hidden-size
@@ -312,8 +370,7 @@
   (make-instance 'gru
 		 :input-size input-size
 		 :hidden-size hidden-size
-		 :name name
-		 :trainable trainable))
+		 :name name :trainable trainable))
 
 (defun ensure-gru-params (l)
   (unless (gru-weight-ih l)
@@ -353,18 +410,23 @@
          (all-h '()) (all-x '()) (all-hn-gate '()))
     (dotimes (i seq-len)
       (let* ((x-t (vt-slice input :all i :all))
-             (gates (vt-+ (vt-+ (vt-matmul x-t wih)
-                                (vt-matmul h whh))
-                          (vt-+ bih bhh)))
+             (gates
+               (vt-+ (vt-+
+                      (vt-matmul x-t (vt-transpose wih))
+                      (vt-matmul h (vt-transpose whh)))
+                     (vt-+ bih bhh)))
              (r (vt-sigmoid
                  (vt-slice gates :all (list 0 hs))))
              (z (vt-sigmoid
-                 (vt-slice gates
-                           :all `(,hs ,(* 2 hs)))))
-             (hn-linear (vt-+ (vt-matmul h w-hn) b-hn))
+                 (vt-slice gates :all `(,hs ,(* 2 hs)))))
+             (hn-linear
+               (vt-+ (vt-matmul h (vt-transpose w-hn))
+                     b-hn))
              (n (vt-tanh
-                 (vt-+ (vt-+ (vt-matmul x-t w-in)
-                             (vt-* r hn-linear))
+                 (vt-+ (vt-+
+                        (vt-matmul x-t
+                                   (vt-transpose w-in))
+                        (vt-* r hn-linear))
                        b-in)))
              (h-new (vt-+ (vt-* (vt-- 1.0d0 z) n)
                           (vt-* z h))))
@@ -383,9 +445,7 @@
                 :h (nreverse all-h)
                 :x (nreverse all-x)
                 :hn-linear (nreverse all-hn-gate)
-                :batch batch
-                :seq-len seq-len
-                :hs hs))
+                :batch batch :seq-len seq-len :hs hs))
     (values output h)))
 
 (defmethod backward ((l gru) grad-output)
@@ -427,80 +487,77 @@
                        dh-next))
              (dz (vt-* dh (vt-- h-prev n-t)))
              (dn (vt-* dh (vt-- 1.0d0 z-t)))
-             (dz-pre (vt-* dz (vt-* z-t
-                                    (vt-- 1.0d0 z-t))))
-             (dn-pre (vt-* dn (vt-- 1.0d0
-                                    (vt-* n-t n-t))))
+             (dz-pre
+               (vt-* dz
+                     (vt-* z-t (vt-- 1.0d0 z-t))))
+             (dn-pre
+               (vt-* dn
+                     (vt-- 1.0d0 (vt-* n-t n-t))))
              (dr (vt-* dn-pre hn-t))
              (dhn-linear (vt-* dn-pre r-t))
-             (dr-pre (vt-* dr (vt-* r-t
-                                    (vt-- 1.0d0 r-t))))
-             (d-gates-rz (vt-concatenate -1
-                                         dr-pre dz-pre)))
-        ;; 1. 处理 Wih 梯度
-        (let ((full-dw (vt-zeros (list (* 3 hs) is))))
+             (dr-pre
+               (vt-* dr
+                     (vt-* r-t (vt-- 1.0d0 r-t))))
+             (d-gates-rz
+               (vt-concatenate -1 dr-pre dz-pre)))
+        ;; 1. Wih
+        (let ((full-dw
+                (vt-zeros (list (* 3 hs) is))))
           (setf (vt-slice full-dw
-                          :all `(0 ,(* 2 hs))
-                          :all)
-                (vt-transpose
-                 (vt-matmul (vt-transpose x-t)
-                            d-gates-rz)))
+                          :all `(0 ,(* 2 hs)) :all)
+                (vt-matmul
+                 (vt-transpose d-gates-rz) x-t))
           (setf (vt-slice full-dw
                           :all `(,(* 2 hs) ,(* 3 hs))
                           :all)
-                (vt-transpose
-                 (vt-matmul (vt-transpose x-t)
-                            dn-pre)))
+                (vt-matmul
+                 (vt-transpose dn-pre) x-t))
           (setf dwih-acc (vt-+ dwih-acc full-dw)))
-        ;; 2. 处理 Whh 梯度
-        (let ((full-dwh (vt-zeros (list (* 3 hs) hs))))
+        ;; 2. Whh
+        (let ((full-dwh
+                (vt-zeros (list (* 3 hs) hs))))
           (setf (vt-slice full-dwh
-                          :all `(0 ,(* 2 hs))
-                          :all)
-                (vt-transpose
-                 (vt-matmul (vt-transpose h-prev)
-                            d-gates-rz)))
+                          :all `(0 ,(* 2 hs)) :all)
+                (vt-matmul
+                 (vt-transpose d-gates-rz) h-prev))
           (setf (vt-slice full-dwh
                           :all `(,(* 2 hs) ,(* 3 hs))
                           :all)
-                (vt-transpose
-                 (vt-matmul (vt-transpose h-prev)
-                            dhn-linear)))
+                (vt-matmul
+                 (vt-transpose dhn-linear) h-prev))
           (setf dwhh-acc (vt-+ dwhh-acc full-dwh)))
-        ;; 3. 处理 bih 梯度
-        (let ((full-db (vt-zeros (list (* 3 hs)))))
-          (setf (vt-slice full-db
-                          :all `(0 ,(* 2 hs)))
+        ;; 3. bih
+        (let ((full-db
+                (vt-zeros (list (* 3 hs)))))
+          (setf (vt-slice full-db :all `(0 ,(* 2 hs)))
                 (vt-sum d-gates-rz :axis 0))
           (setf (vt-slice full-db
                           :all `(,(* 2 hs) ,(* 3 hs)))
                 (vt-sum dn-pre :axis 0))
           (setf dbih-acc (vt-+ dbih-acc full-db)))
-        ;; 4. 处理 bhh 梯度
-        (let ((full-dbh (vt-zeros (list (* 3 hs)))))
-          (setf (vt-slice full-dbh
-                          :all `(0 ,(* 2 hs)))
+        ;; 4. bhh
+        (let ((full-dbh
+                (vt-zeros (list (* 3 hs)))))
+          (setf (vt-slice full-dbh :all `(0 ,(* 2 hs)))
                 (vt-sum d-gates-rz :axis 0))
           (setf (vt-slice full-dbh
                           :all `(,(* 2 hs) ,(* 3 hs)))
                 (vt-sum dhn-linear :axis 0))
           (setf dbhh-acc (vt-+ dbhh-acc full-dbh)))
-        ;; 5. 传播到输入梯度
-        (let* ((wih-rz (vt-slice wih
-                                 :all `(0 ,(* 2 hs))))
-               (dx-t (vt-+ (vt-matmul d-gates-rz
-                                      (vt-transpose wih-rz))
-                           (vt-matmul dn-pre
-                                      (vt-transpose w-in)))))
+        ;; 5. dX = dY @ W
+        (let* ((wih-rz
+                 (vt-slice wih :all `(0 ,(* 2 hs))))
+               (dx-t (vt-+ (vt-matmul d-gates-rz wih-rz)
+                           (vt-matmul dn-pre w-in))))
           (setf (vt-slice grad-input :all idx :all)
                 dx-t))
-        ;; 6. 传播到上一隐藏状态梯度
-        (let* ((whh-rz (vt-slice whh
-                                 :all `(0 ,(* 2 hs))))
-               (dh-from-rz (vt-matmul d-gates-rz
-                                      (vt-transpose whh-rz)))
-               (dh-from-n (vt-matmul dhn-linear
-                                     (vt-transpose w-hn)))
+        ;; 6. dh_prev = dY @ W
+        (let* ((whh-rz
+                 (vt-slice whh :all `(0 ,(* 2 hs))))
+               (dh-from-rz
+                 (vt-matmul d-gates-rz whh-rz))
+               (dh-from-n
+                 (vt-matmul dhn-linear w-hn))
                (dh-from-z (vt-* z-t dh)))
           (setf dh-next
                 (vt-+ (vt-+ dh-from-rz dh-from-n)
@@ -513,13 +570,13 @@
 
 (defmethod params ((l gru))
   (list (list "weight_ih" (gru-weight-ih l)
-	      #'(lambda (v) (setf (gru-weight-ih l) v)))
+              #'(lambda (v) (setf (gru-weight-ih l) v)))
         (list "weight_hh" (gru-weight-hh l)
-	      #'(lambda (v) (setf (gru-weight-hh l) v)))
+              #'(lambda (v) (setf (gru-weight-hh l) v)))
         (list "bias_ih" (gru-bias-ih l)
-	      #'(lambda (v) (setf (gru-bias-ih l) v)))
+              #'(lambda (v) (setf (gru-bias-ih l) v)))
         (list "bias_hh" (gru-bias-hh l)
-	      #'(lambda (v) (setf (gru-bias-hh l) v)))))
+              #'(lambda (v) (setf (gru-bias-hh l) v)))))
 
 (defmethod grads ((l gru))
   (list (cons "weight_ih" (gru-dweight-ih l))

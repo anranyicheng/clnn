@@ -3,71 +3,110 @@
 (defun sigmoid-tensor (x)
   (vt-sigmoid x))
 
+(defun transpose-last-two (vt)
+  "通用转置：无论张量是几维，只交换最后两个维度。
+   2D -> '(1 0)
+   3D -> '(0 2 1)
+   4D -> '(0 1 3 2)"
+  (let* ((rank (length (vt-shape vt)))
+         (perm (loop for i from 0 below rank collect i)))
+    (when (< rank 2) (error "Cannot transpose tensor with rank < 2"))
+    ;; 交换列表中最后两个元素
+    (rotatef (nth (1- rank) perm) (nth (- rank 2) perm))
+    (vt-transpose vt perm)))
+
 (defun sdpa-forward (q k v &optional mask dropout-rate is-training)
-  "SDPA 前向."
-  (let* ((d-k (coerce (second (vt-shape q)) 'double-float))
+  "SDPA 前向 (维度无关版本)."
+  (let* ((d-k (second (vt-shape q)))
          (scale (/ 1.0d0 (sqrt d-k)))
-         (scores (vt-scale (vt-matmul q (vt-transpose k)) scale))
+         ;; 使用防御性转置
+         (scores (vt-scale (vt-matmul q (transpose-last-two k)) scale))
          (masked-scores (if mask (funcall mask scores) scores))
          (attn (vt-softmax masked-scores))
          (attn-dropped
-	   (if (and is-training
-		    (> (or dropout-rate 0.0d0) 0.0d0))
+	   (if (and is-training (> (or dropout-rate 0.0d0) 0.0d0))
                (let ((dr (or dropout-rate 0.0d0)))
                  (vt-map (lambda (x)
 			   (if (< (random 1.0d0) dr)
 			       0.0d0
-			       (/ x (- 1.0d0 dr))))
-			 attn))
+			       (/ x (- 1.0d0 dr)))) attn))
                attn))
          (output (vt-matmul attn-dropped v)))
     (values output attn-dropped)))
 
-
 (defun sdpa-backward (d-output q k v attn)
-  "SDPA 反向."
-  (let* ((d-k (coerce (second (vt-shape q)) 'double-float))
+  "SDPA 反向 (维度无关版本)."
+  (let* ((d-k (second (vt-shape q)))
          (scale (/ 1.0d0 (sqrt d-k)))
-         (dv (vt-matmul (vt-transpose attn) d-output))
-         (d-attn (vt-matmul d-output (vt-transpose v)))
-         (sum-daat (vt-sum (vt-* d-attn attn)
-                           :axis -1 :keepdims t))
+         ;; 使用防御性转置
+         (dv (vt-matmul (transpose-last-two attn) d-output))
+         (d-attn (vt-matmul d-output (transpose-last-two v)))
+         (sum-daat (vt-sum (vt-* d-attn attn) :axis -1 :keepdims t))
          (d-scores (vt-* attn (vt-- d-attn sum-daat)))
          (d-scores-scaled (vt-scale d-scores scale))
          (dq (vt-matmul d-scores-scaled k))
-         (dk (vt-matmul (vt-transpose d-scores-scaled) q)))
+         (dk (vt-matmul (transpose-last-two d-scores-scaled) q)))
     (values dq dk dv)))
 
 (defclass multi-head-attention (layer)
-  ((embed-dim :initarg :embed-dim :reader mha-embed-dim)
-   (num-heads :initarg :num-heads :reader mha-num-heads)
-   (head-dim :reader mha-head-dim)
-   (use-bias :initarg :use-bias :initform t
-    :reader mha-use-bias-p)
-   (dropout-rate :initarg :dropout-rate :initform 0.0d0
-    :accessor mha-dropout-rate)
-   (w-q :accessor mha-wq) (w-k :accessor mha-wk)
-   (w-v :accessor mha-wv) (w-o :accessor mha-wo)
-   (b-q :accessor mha-bq) (b-k :accessor mha-bk)
-   (b-v :accessor mha-bv) (b-o :accessor mha-bo)
-   (dw-q :accessor mha-dwq) (dw-k :accessor mha-dwk)
-   (dw-v :accessor mha-dwv) (dw-o :accessor mha-dwo)
-   (db-q :accessor mha-dbq) (db-k :accessor mha-dbk)
-   (db-v :accessor mha-dbv) (db-o :accessor mha-dbo)
-   (cache :accessor mha-cache))
+  ((embed-dim :initarg :embed-dim
+	      :initform nil
+              :reader mha-embed-dim)
+   (num-heads :initarg :num-heads
+	      :initform nil
+              :reader mha-num-heads)
+   (head-dim :initform nil
+             :reader mha-head-dim)
+   (use-bias :initarg :use-bias
+             :initform t
+             :reader mha-use-bias-p)
+   (dropout-rate :initarg :dropout-rate 
+                 :initform 0.0d0
+                 :accessor mha-dropout-rate)
+   
+   ;; --- 权重矩阵 ---
+   (w-q :initarg :w-q :initform nil :accessor mha-wq)
+   (w-k :initarg :w-k :initform nil :accessor mha-wk)
+   (w-v :initarg :w-v :initform nil :accessor mha-wv)
+   (w-o :initarg :w-o :initform nil :accessor mha-wo)
+   
+   ;; --- 偏置向量 ---
+   (b-q :initarg :b-q :initform nil :accessor mha-bq)
+   (b-k :initarg :b-k :initform nil :accessor mha-bk)
+   (b-v :initarg :b-v :initform nil :accessor mha-bv)
+   (b-o :initarg :b-o :initform nil :accessor mha-bo)
+   
+   ;; --- 权重梯度 ---
+   (dw-q :initarg :dw-q :initform nil :accessor mha-dwq)
+   (dw-k :initarg :dw-k :initform nil :accessor mha-dwk)
+   (dw-v :initarg :dw-v :initform nil :accessor mha-dwv)
+   (dw-o :initarg :dw-o :initform nil :accessor mha-dwo)
+   
+   ;; --- 偏置梯度 ---
+   (db-q :initarg :db-q :initform nil :accessor mha-dbq)
+   (db-k :initarg :db-k :initform nil :accessor mha-dbk)
+   (db-v :initarg :db-v :initform nil :accessor mha-dbv)
+   (db-o :initarg :db-o :initform nil :accessor mha-dbo)
+   
+   ;; --- 前向传播缓存 ---
+   (cache :initarg :cache :initform nil :accessor mha-cache))
+  
   (:documentation "多头注意力 (完整实现)."))
 
+
 (defun make-multi-head-attention
-    (embed-dim num-heads &key use-bias dropout-rate
-     (name "mha") (trainable t))
+    (embed-dim num-heads
+     &key use-bias dropout-rate
+       (name "mha") (trainable t))
   (let ((head-dim (floor embed-dim num-heads)))
     (assert (= (* head-dim num-heads) embed-dim)
             () "embed-dim must be divisible by num-heads")
     (make-instance 'multi-head-attention
-      :embed-dim embed-dim :num-heads num-heads
-      :use-bias use-bias
-      :dropout-rate (or dropout-rate 0.0d0)
-      :name name :trainable trainable)))
+		   :embed-dim embed-dim
+		   :num-heads num-heads
+		   :use-bias use-bias
+		   :dropout-rate (or dropout-rate 0.0d0)
+		   :name name :trainable trainable)))
 
 (defmethod initialize-instance :after
     ((l multi-head-attention) &key)
@@ -78,19 +117,20 @@
   (unless (mha-wq l)
     (let* ((d (mha-embed-dim l))
            (std (sqrt (/ 2.0d0 (* 2.0d0 d)))))
-      (setf (mha-wq l) (vt-scale (vt-random-normal
-                                   (list d d)) std))
-      (setf (mha-wk l) (vt-scale (vt-random-normal
-                                   (list d d)) std))
-      (setf (mha-wv l) (vt-scale (vt-random-normal
-                                   (list d d)) std))
-      (setf (mha-wo l) (vt-scale (vt-random-normal
-                                   (list d d)) std))
+      (setf (mha-wq l)
+            (vt-scale (vt-random-normal (list d d)) std))
+      (setf (mha-wk l)
+            (vt-scale (vt-random-normal (list d d)) std))
+      (setf (mha-wv l)
+            (vt-scale (vt-random-normal (list d d)) std))
+      (setf (mha-wo l)
+            (vt-scale (vt-random-normal (list d d)) std))
       (when (mha-use-bias-p l)
         (setf (mha-bq l) (vt-zeros (list d)))
         (setf (mha-bk l) (vt-zeros (list d)))
         (setf (mha-bv l) (vt-zeros (list d)))
         (setf (mha-bo l) (vt-zeros (list d)))))))
+
 
 (defmethod forward ((l multi-head-attention) inputs)
   (ensure-mha-params l)
@@ -104,17 +144,23 @@
            (hd (mha-head-dim l))
            (ed (mha-embed-dim l))
            (q (if (mha-use-bias-p l)
-                  (vt-+ (vt-matmul query (mha-wq l))
+                  (vt-+ (vt-matmul query
+                                   (vt-transpose (mha-wq l)))
                         (mha-bq l))
-                  (vt-matmul query (mha-wq l))))
+                  (vt-matmul query
+                             (vt-transpose (mha-wq l)))))
            (k (if (mha-use-bias-p l)
-                  (vt-+ (vt-matmul key (mha-wk l))
+                  (vt-+ (vt-matmul key
+                                   (vt-transpose (mha-wk l)))
                         (mha-bk l))
-                  (vt-matmul key (mha-wk l))))
+                  (vt-matmul key
+                             (vt-transpose (mha-wk l)))))
            (v (if (mha-use-bias-p l)
-                  (vt-+ (vt-matmul value (mha-wv l))
+                  (vt-+ (vt-matmul value
+                                   (vt-transpose (mha-wv l)))
                         (mha-bv l))
-                  (vt-matmul value (mha-wv l))))
+                  (vt-matmul value
+                             (vt-transpose (mha-wv l)))))
            (q-4d (vt-reshape q
                              (list batch seq-q nh hd)))
            (k-4d (vt-reshape k
@@ -125,48 +171,49 @@
            (k-t (vt-transpose k-4d '(0 2 1 3)))
            (v-t (vt-transpose v-4d '(0 2 1 3)))
            (q-2d (vt-reshape
-                   (vt-contiguous q-t)
-                   (list (* batch nh) seq-q hd)))
+                  (vt-contiguous q-t)
+                  (list (* batch nh) seq-q hd)))
            (k-2d (vt-reshape
-                   (vt-contiguous k-t)
-                   (list (* batch nh) seq-k hd)))
+                  (vt-contiguous k-t)
+                  (list (* batch nh) seq-k hd)))
            (v-2d (vt-reshape
-                   (vt-contiguous v-t)
-                   (list (* batch nh) seq-v hd))))
+                  (vt-contiguous v-t)
+                  (list (* batch nh) seq-v hd))))
       (multiple-value-bind
-          (attn-out attn-w)
+            (attn-out attn-w)
           (sdpa-forward q-2d k-2d v-2d nil
-                        (mha-dropout-rate l))
-        (let* ((attn-4d (vt-reshape
-                          attn-out
-                          (list batch nh seq-q hd)))
+                        (mha-dropout-rate l)
+                        (training-p l))
+        (let* ((attn-4d
+                 (vt-reshape attn-out
+                             (list batch nh seq-q hd)))
                (attn-transposed
                  (vt-transpose attn-4d '(0 2 1 3)))
                (attn-merged
                  (vt-reshape
-                   (vt-contiguous attn-transposed)
-                   (list batch seq-q ed)))
+                  (vt-contiguous attn-transposed)
+                  (list batch seq-q ed)))
                (output
                  (if (mha-use-bias-p l)
-                     (vt-+ (vt-matmul attn-merged
-                                     (mha-wo l))
-                           (mha-bo l))
+                     (vt-+
+                      (vt-matmul attn-merged
+                                 (vt-transpose (mha-wo l)))
+                      (mha-bo l))
                      (vt-matmul attn-merged
-                               (mha-wo l)))))
+                                (vt-transpose
+                                 (mha-wo l))))))
           (setf (mha-cache l)
                 (list :query query :key key
                       :value value
                       :q-2d q-2d :k-2d k-2d
-                      :v-2d v-2d
-                      :attn-w attn-w
+                      :v-2d v-2d :attn-w attn-w
                       :attn-merged attn-merged
                       :batch batch :seq-q seq-q
-                      :seq-k seq-k
-                      :nh nh :hd hd :ed ed))
+                      :seq-k seq-k :nh nh
+                      :hd hd :ed ed))
           output)))))
 
 (defmethod backward ((l multi-head-attention) grad-output)
-  "完整 MHA 反向 (修复: 返回 dQ, dK, dV 三元组)."
   (let* ((cache (mha-cache l))
          (query (getf cache :query))
          (key (getf cache :key))
@@ -183,14 +230,31 @@
          (hd (getf cache :hd))
          (ed (getf cache :ed))
          (use-bias (mha-use-bias-p l))
-         (d-attn-merged
-           (vt-matmul grad-output
-                      (vt-transpose (mha-wo l))))
-         (d-wo (vt-matmul
-                 (vt-transpose attn-merged)
-                 grad-output))
-         (d-bo (when use-bias
-                 (vt-sum grad-output :axis 0)))
+         (flat-attn
+           (vt-reshape attn-merged
+                       (list (* batch seq-q) ed)))
+         (flat-go
+           (vt-reshape grad-output
+                       (list (* batch seq-q) ed)))
+         (flat-query
+           (vt-reshape query
+                       (list (* batch seq-q) ed)))
+         (flat-key
+           (vt-reshape key
+                       (list (* batch seq-k) ed)))
+         (flat-value
+           (vt-reshape value
+                       (list (* batch seq-k) ed)))
+	 (d-attn-merged
+	   (vt-reshape
+	    (vt-matmul flat-go (mha-wo l))
+	    (list batch seq-q ed)))
+         (d-wo
+           (vt-matmul
+            (vt-transpose flat-go) flat-attn))
+         (d-bo
+           (when use-bias
+             (vt-sum flat-go :axis 0)))
          (d-attn-4d
            (vt-reshape d-attn-merged
                        (list batch seq-q nh hd)))
@@ -198,50 +262,65 @@
            (vt-transpose d-attn-4d '(0 2 1 3)))
          (d-attn-out
            (vt-reshape
-             (vt-contiguous d-attn-transposed)
-             (list (* batch nh) seq-q hd))))
+            (vt-contiguous d-attn-transposed)
+            (list (* batch nh) seq-q hd))))
     (multiple-value-bind
-        (dq-2d dk-2d dv-2d)
-        (sdpa-backward d-attn-out q-2d k-2d v-2d attn-w)
+          (dq-2d dk-2d dv-2d)
+        (sdpa-backward d-attn-out
+                       q-2d k-2d v-2d attn-w)
       (flet ((merge-heads (d-2d seq-len)
                (let* ((d-4d (vt-reshape
                              d-2d
                              (list batch nh seq-len hd)))
-                      (d-t (vt-transpose d-4d '(0 2 1 3)))
+                      (d-t (vt-transpose
+                            d-4d '(0 2 1 3)))
                       (d-merged
                         (vt-reshape
-                          (vt-contiguous d-t)
-                          (list batch seq-len ed))))
+                         (vt-contiguous d-t)
+                         (list batch seq-len ed))))
                  d-merged)))
         (let* ((d-q-merged (merge-heads dq-2d seq-q))
                (d-k-merged (merge-heads dk-2d seq-k))
                (d-v-merged (merge-heads dv-2d seq-k))
-               ;; 投影反向
+               (flat-d-q
+                 (vt-reshape d-q-merged
+                             (list (* batch seq-q) ed)))
+               (flat-d-k
+                 (vt-reshape d-k-merged
+                             (list (* batch seq-k) ed)))
+               (flat-d-v
+                 (vt-reshape d-v-merged
+                             (list (* batch seq-k) ed)))
                (d-query
-                 (vt-matmul d-q-merged
-                            (vt-transpose (mha-wq l))))
-               (d-wq (vt-matmul
-                       (vt-transpose query)
-                       d-q-merged))
-               (d-bq (when use-bias
-                       (vt-sum d-q-merged :axis 0)))
+                 (vt-reshape
+                  (vt-matmul flat-d-q (mha-wq l))
+                  (list batch seq-q ed)))
                (d-key
-                 (vt-matmul d-k-merged
-                            (vt-transpose (mha-wk l))))
-               (d-wk (vt-matmul
-                       (vt-transpose key)
-                       d-k-merged))
-               (d-bk (when use-bias
-                       (vt-sum d-k-merged :axis 0)))
+                 (vt-reshape
+                  (vt-matmul flat-d-k (mha-wk l))
+                  (list batch seq-k ed)))
                (d-value
-                 (vt-matmul d-v-merged
-                            (vt-transpose (mha-wv l))))
-               (d-wv (vt-matmul
-                       (vt-transpose value)
-                       d-v-merged))
-               (d-bv (when use-bias
-                       (vt-sum d-v-merged :axis 0))))
-          ;; 记录参数梯度
+                 (vt-reshape
+                  (vt-matmul flat-d-v (mha-wv l))
+                  (list batch seq-k ed)))
+               (d-wq
+                 (vt-matmul
+                  (vt-transpose flat-d-q) flat-query))
+               (d-wk
+                 (vt-matmul
+                  (vt-transpose flat-d-k) flat-key))
+               (d-wv
+                 (vt-matmul
+                  (vt-transpose flat-d-v) flat-value))
+               (d-bq
+                 (when use-bias
+                   (vt-sum flat-d-q :axis 0)))
+               (d-bk
+                 (when use-bias
+                   (vt-sum flat-d-k :axis 0)))
+               (d-bv
+                 (when use-bias
+                   (vt-sum flat-d-v :axis 0))))
           (setf (mha-dwq l) d-wq
                 (mha-dwk l) d-wk
                 (mha-dwv l) d-wv
@@ -256,65 +335,82 @@
 (defmethod params ((l multi-head-attention))
   (let ((r (list
             (list "w_q" (mha-wq l)
-                  #'(lambda (v) (setf (mha-wq l) v)))
+                  #'(lambda (v)
+                      (setf (mha-wq l) v)))
             (list "w_k" (mha-wk l)
-                  #'(lambda (v) (setf (mha-wk l) v)))
+                  #'(lambda (v)
+                      (setf (mha-wk l) v)))
             (list "w_v" (mha-wv l)
-                  #'(lambda (v) (setf (mha-wv l) v)))
+                  #'(lambda (v)
+                      (setf (mha-wv l) v)))
             (list "w_o" (mha-wo l)
-                  #'(lambda (v) (setf (mha-wo l) v))))))
+                  #'(lambda (v)
+                      (setf (mha-wo l) v))))))
     (when (mha-use-bias-p l)
       (setf r (nconc r (list
-        (list "b_q" (mha-bq l)
-              #'(lambda (v) (setf (mha-bq l) v)))
-        (list "b_k" (mha-bk l)
-              #'(lambda (v) (setf (mha-bk l) v)))
-        (list "b_v" (mha-bv l)
-              #'(lambda (v) (setf (mha-bv l) v)))
-        (list "b_o" (mha-bo l)
-              #'(lambda (v) (setf (mha-bo l) v)))))))
+			(list "b_q" (mha-bq l)
+			      #'(lambda (v)
+				  (setf (mha-bq l) v)))
+			(list "b_k" (mha-bk l)
+			      #'(lambda (v)
+				  (setf (mha-bk l) v)))
+			(list "b_v" (mha-bv l)
+			      #'(lambda (v)
+				  (setf (mha-bv l) v)))
+			(list "b_o" (mha-bo l)
+			      #'(lambda (v)
+				  (setf (mha-bo l) v)))))))
     r))
 
 (defmethod grads ((l multi-head-attention))
-  (let ((r (list
-            (cons "w_q" (mha-dwq l))
-            (cons "w_k" (mha-dwk l))
-            (cons "w_v" (mha-dwv l))
-            (cons "w_o" (mha-dwo l)))))
+  (let ((r (list (cons "w_q" (mha-dwq l))
+                 (cons "w_k" (mha-dwk l))
+                 (cons "w_v" (mha-dwv l))
+                 (cons "w_o" (mha-dwo l)))))
     (when (mha-use-bias-p l)
       (setf r (nconc r (list
-        (cons "b_q" (mha-dbq l))
-        (cons "b_k" (mha-dbk l))
-        (cons "b_v" (mha-dbv l))
-        (cons "b_o" (mha-dbo l))))))
+			(cons "b_q" (mha-dbq l))
+			(cons "b_k" (mha-dbk l))
+			(cons "b_v" (mha-dbv l))
+			(cons "b_o" (mha-dbo l))))))
     r))
 
-
 (defclass transformer-block (layer)
-  ((embed-dim :initarg :embed-dim :reader tb-embed-dim)
-   (num-heads :initarg :num-heads :reader tb-num-heads)
-   (ffn-dim :initarg :ffn-dim :initform nil
-    :reader tb-ffn-dim)
-   (dropout-rate :initarg :dropout-rate :initform 0.1d0
-    :reader tb-dropout-rate)
-   (eps :initarg :eps :initform 1.0d-5 :reader tb-eps)
-   (mha :accessor tb-mha)
-   (ffn-dense1 :accessor tb-ffn1)
-   (ffn-dense2 :accessor tb-ffn2)
-   (ln1 :accessor tb-ln1) (ln2 :accessor tb-ln2)
-   (drop1 :accessor tb-drop1)
-   (drop2 :accessor tb-drop2))
+  ((embed-dim :initarg :embed-dim
+              :reader tb-embed-dim)
+   (num-heads :initarg :num-heads
+              :reader tb-num-heads)
+   (ffn-dim :initarg :ffn-dim
+            :initform nil
+            :reader tb-ffn-dim)
+   (dropout-rate :initarg :dropout-rate
+                 :initform 0.1d0
+                 :reader tb-dropout-rate)
+   (eps :initarg :eps
+        :initform 1.0d-5
+        :reader tb-eps)   
+   ;; --- 子层组件 ---
+   (mha :initarg :mha :initform nil :accessor tb-mha)
+   (ffn-dense1 :initarg :ffn-dense1 :initform nil :accessor tb-ffn1)
+   (ffn-dense2 :initarg :ffn-dense2 :initform nil :accessor tb-ffn2)
+   (ln1 :initarg :ln1 :initform nil :accessor tb-ln1)
+   (ln2 :initarg :ln2 :initform nil :accessor tb-ln2)
+   (drop1 :initarg :drop1 :initform nil :accessor tb-drop1)
+   (drop2 :initarg :drop2 :initform nil :accessor tb-drop2))
   (:documentation "Pre-Norm Transformer Block."))
 
+
 (defun make-transformer-block
-    (embed-dim num-heads &key ffn-dim dropout-rate eps
-     (name "transformer-block") (trainable t))
+    (embed-dim num-heads
+     &key ffn-dim dropout-rate eps
+       (name "transformer-block") (trainable t))
   (make-instance 'transformer-block
-    :embed-dim embed-dim :num-heads num-heads
-    :ffn-dim ffn-dim
-    :dropout-rate (or dropout-rate 0.1d0)
-    :eps (or eps 1.0d-5)
-    :name name :trainable trainable))
+		 :embed-dim embed-dim
+		 :num-heads num-heads
+		 :ffn-dim ffn-dim
+		 :dropout-rate (or dropout-rate 0.1d0)
+		 :eps (or eps 1.0d-5)
+		 :name name :trainable trainable))
 
 (defmethod initialize-instance :after
     ((l transformer-block) &key)
@@ -324,12 +420,14 @@
          (dr (tb-dropout-rate l))
          (ep (tb-eps l)))
     (setf (tb-mha l)
-          (make-multi-head-attention
-            ed nh :dropout-rate dr))
+          (make-multi-head-attention ed nh
+                                     :dropout-rate dr))
     (setf (tb-ffn1 l)
-          (make-dense fd :activation :gelu :name "ffn1"))
+          (make-dense fd :activation :gelu
+			 :name "ffn1"))
     (setf (tb-ffn2 l)
-          (make-dense ed :activation :none :name "ffn2"))
+          (make-dense ed :activation :none
+			 :name "ffn2"))
     (setf (tb-ln1 l)
           (make-layer-norm (list ed) :eps ep))
     (setf (tb-ln2 l)
@@ -339,8 +437,9 @@
 
 (defmethod forward ((l transformer-block) x)
   (let* ((normed1 (forward (tb-ln1 l) x))
-         (attn-out (forward (tb-mha l)
-                            (list normed1 normed1 normed1)))
+         (attn-out
+           (forward (tb-mha l)
+                    (list normed1 normed1 normed1)))
          (dropped1 (forward (tb-drop1 l) attn-out))
          (x1 (vt-+ x dropped1))
          (normed2 (forward (tb-ln2 l) x1))
@@ -350,19 +449,26 @@
     (vt-+ x1 dropped2)))
 
 (defmethod backward ((l transformer-block) grad-output)
-  (let* ((d-ffn-out2 (backward (tb-drop2 l) grad-output))
+  (let* ((d-ffn-out2
+           (backward (tb-drop2 l) grad-output))
          (d-ffn-out (backward (tb-ffn2 l) d-ffn-out2))
          (d-normed2 (backward (tb-ffn1 l) d-ffn-out))
-         (d-x1-from-ln2 (backward (tb-ln2 l) d-normed2))
-         (dx1-total (vt-+ grad-output d-x1-from-ln2))
-         (d-attn-out (backward (tb-drop1 l) dx1-total)))
-    (multiple-value-bind (d-q d-k d-v) 
+         (d-x1-from-ln2
+           (backward (tb-ln2 l) d-normed2))
+         (dx1-total
+           (vt-+ grad-output d-x1-from-ln2))
+         (d-attn-out
+           (backward (tb-drop1 l) dx1-total)))
+    (multiple-value-bind
+          (d-q d-k d-v)
         (backward (tb-mha l) d-attn-out)
-      (let* ((d-normed1 (vt-+ d-q (vt-+ d-k d-v)))
-             (d-x-from-ln1 (backward (tb-ln1 l) d-normed1))
-             (d-x-total (vt-+ dx1-total d-x-from-ln1)))
+      (let* ((d-normed1
+               (vt-+ d-q (vt-+ d-k d-v)))
+             (d-x-from-ln1
+               (backward (tb-ln1 l) d-normed1))
+             (d-x-total
+               (vt-+ dx1-total d-x-from-ln1)))
         d-x-total))))
-
 
 (defmethod params ((l transformer-block))
   (append (params (tb-mha l))
@@ -378,9 +484,11 @@
           (grads (tb-ln1 l))
           (grads (tb-ln2 l))))
 
-(defmethod set-training! ((l transformer-block) mode)
+(defmethod set-training!
+    ((l transformer-block) mode)
   (call-next-method)
-  (dolist (sub (list (tb-mha l) (tb-ffn1 l) (tb-ffn2 l)
-                     (tb-ln1 l) (tb-ln2 l)
-                     (tb-drop1 l) (tb-drop2 l)))
+  (dolist (sub (list (tb-mha l) (tb-ffn1 l)
+                     (tb-ffn2 l) (tb-ln1 l)
+                     (tb-ln2 l) (tb-drop1 l)
+                     (tb-drop2 l)))
     (when sub (set-training! sub mode))))

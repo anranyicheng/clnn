@@ -23,12 +23,12 @@
 (defun vt-relu-derivative (z)
   "ReLU 导数: z > 0 → 1, 否则 → 0"
   (vt-map
-    (lambda (x) (if (> x 0.0d0) 1.0d0 0.0d0)) z))
+   (lambda (x) (if (> x 0.0d0) 1.0d0 0.0d0)) z))
 
 (defun vt-leaky-relu-derivative (z &optional (alpha 0.01d0))
   "Leaky ReLU 导数."
   (vt-map
-    (lambda (x) (if (> x 0.0d0) 1.0d0 alpha)) z))
+   (lambda (x) (if (> x 0.0d0) 1.0d0 alpha)) z))
 
 (defun vt-sigmoid-derivative (a)
   "Sigmoid 导数: a * (1 - a)"
@@ -38,20 +38,21 @@
   "Tanh 导数: 1 - a^2"
   (vt-- 1.0d0 (vt-* a a)))
 
+(defparameter *a* nil)
 (defun vt-gelu-derivative (x)
   "GELU 导数（近似）."
-  (let* ((c (sqrt (/ 2.0d0 (coerce pi 'double-float))))
+  (let* ((c (sqrt (/ 2.0d0 pi)))
          (x3 (vt-expt x 3.0d0))
          (inner (vt-+ x (vt-scale x3 0.044715d0)))
          (tanh-val (vt-tanh (vt-scale inner c)))
          (sec2 (vt-- 1.0d0 (vt-* tanh-val tanh-val)))
-         (dtanh
-           (vt-scale
-             sec2
-             (* c (vt-+ 1.0d0
-                        (vt-scale
-                          (vt-expt x 2.0d0)
-                          (* 3.0d0 0.044715d0))))))
+	 (dtanh (vt-scale sec2
+			  (vt-scale
+			   (vt-+ 1.0d0
+				 (vt-scale
+				  (vt-expt x 2.0d0)
+				  (* 3.0d0 0.044715d0)))
+			   c)))
          (phi (vt-scale (vt-+ 1.0d0 tanh-val) 0.5d0))
          (dphi (vt-scale dtanh 0.5d0)))
     (vt-+ phi (vt-* x dphi))))
@@ -64,9 +65,9 @@
 (defun vt-hard-sigmoid-derivative (x)
   "Hard Sigmoid 导数."
   (vt-map
-    (lambda (v)
-      (if (and (>= v -2.5d0) (<= v 2.5d0)) 0.2d0 0.0d0))
-    x))
+   (lambda (v)
+     (if (and (>= v -2.5d0) (<= v 2.5d0)) 0.2d0 0.0d0))
+   x))
 
 (defun vt-softmax-derivative (s)
   "Softmax 导数简化近似."
@@ -81,163 +82,210 @@
     (vt-+ tsp (vt-* x (vt-* sech2 sig)))))
 
 (defclass dense (layer)
-  ((in-dim :initarg :in-dim :reader dense-in-dim
+  ((in-dim :initarg :in-dim
+	   :reader dense-in-dim
            :type fixnum)
-   (out-dim :initarg :out-dim :reader dense-out-dim
+   (out-dim :initarg :out-dim
+	    :reader dense-out-dim
             :type fixnum)
-   (weight-init :initarg :weight-init :initform nil
+   (weight-init :initarg :weight-init
+		:initform nil
                 :accessor dense-weight-init)
-   (bias-init :initarg :bias-init :initform nil
+   (bias-init :initarg :bias-init
+	      :initform nil
               :accessor dense-bias-init)
-   (use-bias :initarg :use-bias :initform t
+   (use-bias :initarg :use-bias
+	     :initform t
              :reader dense-use-bias-p)
-   (activation :initarg :activation :initform :none
+   (activation :initarg :activation
+	       :initform :none
                :accessor dense-activation
                :type (member :none :relu :leaky-relu :sigmoid
                              :tanh :gelu :swish :mish
                              :softplus :hard-tanh
                              :hard-sigmoid :linear))
-   (weights :accessor dense-weights :type (or null vt))
-   (bias :accessor dense-bias :type (or null vt))
-   (dw :accessor dense-dw :type (or null vt))
-   (db :accessor dense-db :type (or null vt))
-   (input-cache :accessor dense-input-cache
-                 :type (or null vt))
-   (z-cache :accessor dense-z-cache :type (or null vt))
-   (a-cache :accessor dense-a-cache :type (or null vt))
-   (leaky-alpha :initarg :leaky-alpha :initform 0.01d0
+   (weights :initarg :weights
+	    :initform nil
+	    :accessor dense-weights
+	    :type (or null vt))
+   (bias :initarg :bias
+	 :initform nil
+	 :accessor dense-bias
+	 :type (or null vt))
+   (dw :initarg :dw
+       :initform nil
+       :accessor dense-dw
+       :type (or null vt))
+   (db :initarg :db
+       :initform nil
+       :accessor dense-db
+       :type (or null vt))
+   (input-cache :initarg :input-cache
+		:initform nil
+		:accessor dense-input-cache
+                :type (or null vt))
+   (z-cache :initarg :z-cache
+	    :initform nil
+	    :accessor dense-z-cache
+	    :type (or null vt))
+   (a-cache :initarg :a-cache
+	    :initform nil
+	    :accessor dense-a-cache
+	    :type (or null vt))
+   (leaky-alpha :initarg :leaky-alpha
+		:initform 0.01d0
                 :accessor dense-leaky-alpha
                 :type double-float))
   (:documentation "全连接层: y = activation(x · W + b)"))
 
 (defun make-dense
     (out-dim &key (in-dim nil) activation use-bias
-              weight-init bias-init leaky-alpha
-              (name "dense") (trainable t))
+               weight-init bias-init leaky-alpha
+               (name "dense") (trainable t))
   "构造全连接层."
   (make-instance 'dense
-    :out-dim out-dim :in-dim in-dim
-    :activation (or activation :none)
-    :use-bias use-bias
-    :weight-init weight-init
-    :bias-init bias-init
-    :leaky-alpha (or leaky-alpha 0.01d0)
-    :name name :trainable trainable))
+		 :out-dim out-dim :in-dim in-dim
+		 :activation (or activation :none)
+		 :use-bias use-bias
+		 :weight-init weight-init
+		 :bias-init bias-init
+		 :leaky-alpha (or leaky-alpha 0.01d0)
+		 :name name :trainable trainable))
+
 
 (defmethod forward ((l dense) input)
   (let* ((in-shape (vt-shape input))
-         (batch-size
-           (if (= (length in-shape) 1)
-               1 (first in-shape)))
-         (in-dim
-           (or (dense-in-dim l)
-               (if (= (length in-shape) 1)
-                   (first in-shape)
-                   (reduce #'* (rest in-shape)))))
-         (w
-           (or (dense-weights l)
-               (let* ((fan-in in-dim)
-                      (fan-out (dense-out-dim l))
-                      (w-init
-                        (or (dense-weight-init l)
-                            (make-he-normal))))
-                 (setf (slot-value l 'in-dim) in-dim)
-                 (setf (dense-weights l)
-                       (init-weight
-                         w-init
-                         (list in-dim fan-out)
-                         :fan-in fan-in
-                         :fan-out fan-out)))))
-         (x-flat
-           (if (= (length in-shape) 2)
-               input
-               (vt-reshape input
-                           (list batch-size in-dim))))
-         (z
-           (if (dense-use-bias-p l)
-               (let ((b
-                       (or (dense-bias l)
-                           (setf (dense-bias l)
-                                 (init-bias
-                                   (or (dense-bias-init l)
-                                       (make-zeros-init))
-                                   (list (dense-out-dim l)))))))
-                 (vt-+ (vt-matmul x-flat w) b))
-               (vt-matmul x-flat w)))
-         (a
-           (ecase (dense-activation l)
-             ((:none :linear)             z)
-             ((:relu relu)                (vt-relu z))
-             ((:leaky-relu leaky-relu)    (vt-leaky-relu
-					   z (dense-leaky-alpha l)))
-             ((:sigmoid sigmoid)          (vt-sigmoid z))
-             ((:tanh tanh)                (vt-tanh z))
-             ((:gelu gelu)                (vt-gelu z))
-             ((:swish swish)              (vt-swish z))
-             ((:mish mish)                (vt-mish z))
-             ((:softplus softplus)        (vt-softplus z))
-             ((:hard-tanh hard-tanh)      (vt-hard-tanh z))
-             ((:hard-sigmoid had-sigmoid) (vt-hard-sigmoid z)))))
-    (setf (dense-input-cache l) x-flat)
+         (rank (length in-shape))
+         ;; 符合 PyTorch 标准，只认最后一个维度为特征维度
+         (in-dim (or (dense-in-dim l)
+                     (car (last in-shape))))
+         ;; 前面的维度全部相乘作为 Batch
+         (batch-size (if (= rank 1)
+                         1
+                         (reduce #'* (butlast in-shape))))
+         ;; 延迟初始化权重
+         (w (or (dense-weights l)
+                (let* ((fan-in in-dim)
+                       (fan-out (dense-out-dim l))
+                       (w-init (or (dense-weight-init l)
+                                   (make-he-normal))))
+                  (setf (slot-value l 'in-dim) in-dim)
+                  (setf (dense-weights l)
+                        (init-weight w-init
+                                     (list in-dim fan-out)
+                                     :fan-in fan-in
+                                     :fan-out fan-out)))))
+         ;; 只有当不是标准 2D 时才展平
+         (x-flat (if (and (= rank 2)
+                          (= (second in-shape) in-dim))
+                     input
+                     (vt-reshape input
+                                 (list batch-size in-dim))))
+         ;; 线性变换 + 偏置
+         (z (if (dense-use-bias-p l)
+                (let ((b (or (dense-bias l)
+                             (setf (dense-bias l)
+                                   (init-bias
+                                    (or (dense-bias-init l)
+                                        (make-zeros-init))
+                                    (list (dense-out-dim l)))))))
+                  (vt-+ (vt-matmul x-flat w) b))
+                (vt-matmul x-flat w)))
+         ;; 激活函数
+         (a (ecase (dense-activation l)
+              ((:none :linear) z)
+              ((:relu relu) (vt-relu z))
+              ((:leaky-relu leaky-relu)
+               (vt-leaky-relu z (dense-leaky-alpha l)))
+              ((:sigmoid sigmoid) (vt-sigmoid z))
+              ((:tanh tanh) (vt-tanh z))
+              ((:gelu gelu) (vt-gelu z))
+              ((:swish swish) (vt-swish z))
+              ((:mish mish) (vt-mish z))
+              ((:softplus softplus) (vt-softplus z))
+              ((:hard-tanh hard-tanh) (vt-hard-tanh z))
+              ((:hard-sigmoid had-sigmoid)
+               (vt-hard-sigmoid z)))))
+    ;; 巧妙利用 cons 打包，同时缓存原始形状和展平输入
+    (setf (dense-input-cache l) (cons in-shape x-flat))
     (setf (dense-z-cache l) z)
     (setf (dense-a-cache l) a)
-    a))
+    ;; 根据原始形状决定是否恢复多维
+    (if (or (> rank 2)
+            (not (and (= rank 2)
+                      (= (second in-shape) in-dim))))
+        (vt-reshape a
+                    (append (butlast in-shape)
+                            (list (dense-out-dim l))))
+        a)))
 
 (defmethod backward ((l dense) grad-output)
-  (let* ((a-prev (dense-input-cache l))
+  (let* ((cached (dense-input-cache l))
+         (orig-shape (first cached))  ;; 取出原始形状
+         (a-prev (rest cached))       ;; 取出展平后的 2D 矩阵
          (w (dense-weights l))
          (act-kind (dense-activation l))
+         (rank (length orig-shape))
+         ;; 如果原本是多维输入，把梯度也展平成 2D 去算矩阵乘法
+         (grad-flat (if (<= rank 2)
+                        grad-output
+                        (vt-reshape grad-output
+                                    (list (first (vt-shape a-prev))
+                                          (dense-out-dim l)))))
+         ;; 计算激活函数的导数
          (d-activation
            (ecase act-kind
-             ((:none :linear) grad-output)
-             ((:relu relu)  
-               (vt-* grad-output
-                     (vt-relu-derivative (dense-z-cache l))))
+             ((:none :linear) grad-flat)
+             ((:relu relu)
+              (vt-* grad-flat
+                    (vt-relu-derivative (dense-z-cache l))))
              ((:leaky-relu leaky-relu)
-               (vt-* grad-output
-                     (vt-leaky-relu-derivative
-                       (dense-z-cache l)
-                       (dense-leaky-alpha l))))
+              (vt-* grad-flat
+                    (vt-leaky-relu-derivative
+                     (dense-z-cache l)
+                     (dense-leaky-alpha l))))
              ((:sigmoid sigmoid)
-               (vt-* grad-output
-                     (vt-sigmoid-derivative
-                       (dense-a-cache l))))
+              (vt-* grad-flat
+                    (vt-sigmoid-derivative (dense-a-cache l))))
              ((:tanh tanh)
-               (vt-* grad-output
-                     (vt-tanh-derivative (dense-a-cache l))))
-             ((:gelu gelu)  
-               (vt-* grad-output
-                     (vt-gelu-derivative (dense-z-cache l))))
-             ((:swish swish) 
-               (vt-* grad-output
-                     (vt-swish-derivative (dense-z-cache l))))
-             ((:mish mish) 
-               (vt-* grad-output
-                     (vt-mish-derivative (dense-z-cache l))))
-             ((:softplus softplus)  
-               (vt-* grad-output
-                     (vt-sigmoid (dense-z-cache l))))
+              (vt-* grad-flat
+                    (vt-tanh-derivative (dense-a-cache l))))
+             ((:gelu gelu)
+              (vt-* grad-flat
+                    (vt-gelu-derivative (dense-z-cache l))))
+             ((:swish swish)
+              (vt-* grad-flat
+                    (vt-swish-derivative (dense-z-cache l))))
+             ((:mish mish)
+              (vt-* grad-flat
+                    (vt-mish-derivative (dense-z-cache l))))
+             ((:softplus softplus)
+              (vt-* grad-flat
+                    (vt-sigmoid (dense-z-cache l))))
              ((:hard-tanh hard-tanh)
-               (let ((z (dense-z-cache l)))
-                 (vt-* grad-output
-                       (vt-map
-                         (lambda (x)
-                           (if (and (>= x -1.0d0)
-                                    (<= x 1.0d0))
-                               1.0d0 0.0d0))
-                         z))))
+              (let ((z (dense-z-cache l)))
+                (vt-* grad-flat
+                      (vt-map (lambda (x)
+                                (if (and (>= x -1.0d0)
+                                         (<= x 1.0d0))
+                                    1.0d0 0.0d0))
+                             z))))
              ((:hard-sigmoid had-sigmoid)
-               (vt-* grad-output
-                     (vt-hard-sigmoid-derivative
-                       (dense-z-cache l))))))
-         (dw
-           (vt-matmul
-             (vt-transpose a-prev) d-activation)))
+              (vt-* grad-flat
+                    (vt-hard-sigmoid-derivative
+                     (dense-z-cache l))))))
+         ;; 计算权重梯度
+         (dw (vt-matmul (vt-transpose a-prev)
+                        d-activation)))
     (setf (dense-dw l) dw)
     (when (dense-use-bias-p l)
-      (setf (dense-db l)
-            (vt-sum d-activation :axis 0)))
-    (vt-matmul d-activation (vt-transpose w))))
+      (setf (dense-db l) (vt-sum d-activation :axis 0)))
+    ;; 计算输入梯度并还原形状
+    (let ((d-x-flat (vt-matmul d-activation
+                               (vt-transpose w))))
+      (if (<= rank 2)
+          d-x-flat
+          (vt-reshape d-x-flat orig-shape)))))
 
 
 (defmethod params ((l dense))
@@ -264,30 +312,34 @@
 
 
 (defclass activation-layer (layer)
-  ((kind :initarg :kind :initform :relu
+  ((kind :initarg :kind
+	 :initform :relu
          :accessor activation-kind
          :type (member :relu :leaky-relu :sigmoid :tanh
                        :gelu :swish :mish :softplus
                        :hard-tanh :hard-sigmoid :linear
-                       :softmax :log-softmax))
-   (leaky-alpha :initarg :leaky-alpha :initform 0.01d0
+			     :softmax :log-softmax))
+   (leaky-alpha :initarg :leaky-alpha
+		:initform 0.01d0
                 :accessor act-leaky-alpha)
-   (cache :initform nil :accessor act-cache)))
+   (cache :initarg :cache
+	  :initform nil
+	  :accessor act-cache)))
 
 (defun make-activation-layer
     (kind &key leaky-alpha
-              (name "activation") (trainable nil))
+            (name "activation") (trainable nil))
   (make-instance 'activation-layer
-    :kind kind
-    :leaky-alpha (or leaky-alpha 0.01d0)
-    :name name :trainable trainable))
+		 :kind kind
+		 :leaky-alpha (or leaky-alpha 0.01d0)
+		 :name name :trainable trainable))
 
 (defmethod forward ((l activation-layer) input)
   (let ((out
           (ecase (activation-kind l)
             ((:relu relu)               (vt-relu input))
             ((:leaky-relu               leaky-relu)
-              (vt-leaky-relu input      (act-leaky-alpha l)))
+             (vt-leaky-relu input      (act-leaky-alpha l)))
             ((:sigmoid sigmoid)         (vt-sigmoid input))
             ((:tanh tanh)               (vt-tanh input))
             ((:gelu gelu)               (vt-gelu input))
@@ -306,57 +358,58 @@
   (let ((input (act-cache l)))
     (ecase (activation-kind l)
       ((:relu relu)
-        (vt-* grad-output
-              (vt-relu-derivative input)))
+       (vt-* grad-output
+             (vt-relu-derivative input)))
       ((:leaky-relu leaky-relu)
-        (vt-* grad-output
-              (vt-leaky-relu-derivative
-                input (act-leaky-alpha l))))
+       (vt-* grad-output
+             (vt-leaky-relu-derivative
+              input (act-leaky-alpha l))))
       ((:sigmoid sigmoid)
-        (vt-* grad-output
-              (vt-sigmoid-derivative (vt-sigmoid input))))
+       (vt-* grad-output
+             (vt-sigmoid-derivative (vt-sigmoid input))))
       ((:tanh tanh)
-        (vt-* grad-output
-              (vt-tanh-derivative (vt-tanh input))))
+       (vt-* grad-output
+             (vt-tanh-derivative (vt-tanh input))))
       ((:gelu gelu)
-        (vt-* grad-output (vt-gelu-derivative input)))
+       (vt-* grad-output (vt-gelu-derivative input)))
       ((:swish swish)
-        (vt-* grad-output (vt-swish-derivative input)))
+       (vt-* grad-output (vt-swish-derivative input)))
       ((:mish mish)
-        (vt-* grad-output (vt-mish-derivative input)))
+       (vt-* grad-output (vt-mish-derivative input)))
       ((:softplus softplus)
-        (vt-* grad-output (vt-sigmoid input)))
+       (vt-* grad-output (vt-sigmoid input)))
       ((:hard-tanh hard-tanh)
-        (vt-* grad-output
-              (vt-map
-                (lambda (x)
-                  (if (and (>= x -1.0d0) (<= x 1.0d0))
-                      1.0d0 0.0d0))
-                input)))
+       (vt-* grad-output
+             (vt-map
+              (lambda (x)
+                (if (and (>= x -1.0d0) (<= x 1.0d0))
+                    1.0d0 0.0d0))
+              input)))
       ((:hard-sigmoid hard-sigmoid)
-        (vt-* grad-output
-              (vt-hard-sigmoid-derivative input)))
+       (vt-* grad-output
+             (vt-hard-sigmoid-derivative input)))
       ((:linear :none) grad-output)
       ((:softmax softmax)
-        (vt-* grad-output
-              (vt-softmax-derivative (vt-softmax input))))
+       (vt-* grad-output
+             (vt-softmax-derivative (vt-softmax input))))
       ((:log-softmax log-softmax)
-        (let* ((s (vt-softmax input))
-               (sum-dy
-                 (vt-sum grad-output
-                         :axis -1 :keepdims t)))
-          (vt-- grad-output (vt-* s sum-dy)))))))
+       (let* ((s (vt-softmax input))
+              (sum-dy
+                (vt-sum grad-output
+                        :axis -1 :keepdims t)))
+         (vt-- grad-output (vt-* s sum-dy)))))))
 
 
 (defclass flatten (layer)
-  ((start-dim :initarg :start-dim :initform 1
+  ((start-dim :initarg :start-dim
+	      :initform 1
               :reader flatten-start-dim))
   (:documentation
-    "将 (batch, d1, d2, ...) 展平为 (batch, d1*d2*...)."))
+   "将 (batch, d1, d2, ...) 展平为 (batch, d1*d2*...)."))
 
 (defun make-flatten (&key (start-dim 1) (name "flatten"))
   (make-instance 'flatten
-    :start-dim start-dim :name name :trainable nil))
+		 :start-dim start-dim :name name :trainable nil))
 
 (defmethod forward ((l flatten) input)
   (let* ((shape (vt-shape input))
@@ -364,18 +417,20 @@
          (pre-dim (reduce #'* (subseq shape 0 start)))
          (post-dim (reduce #'* (subseq shape start))))
     (vt-reshape
-      input
-      (list (if (> start 0) pre-dim 1) post-dim))))
+     input
+     (list (if (> start 0) pre-dim 1) post-dim))))
 
 (defclass residual (layer)
-  ((block :initarg :block :reader residual-block))
+  ((block :initarg :block
+	  :initform nil
+	  :reader residual-block))
   (:documentation
-    "残差连接: output = input + block(input)."))
+   "残差连接: output = input + block(input)."))
 
 (defun make-residual (block &key (name "residual"))
   (make-instance 'residual
-    :block block :name name
-    :trainable (layer-trainable-p block)))
+		 :block block :name name
+		 :trainable (layer-trainable-p block)))
 
 (defmethod forward ((l residual) input)
   (let ((out (forward (residual-block l) input)))

@@ -1,15 +1,18 @@
 (in-package #:nn)
 
 (defclass sequential (layer)
-  ((layers :initform '() :accessor seq-layers
+  ((layers :initform '()
+	   :initarg :layers
+	   :accessor seq-layers
            :type list)
    (layer-names :initform '()
-    :accessor seq-layer-names))
+		:initarg :layer-names
+		:accessor seq-layer-names))
   (:documentation "顺序模型."))
 
 (defun make-sequential (&key (name "sequential"))
   (make-instance 'sequential
-    :name name :trainable t))
+		 :name name :trainable t))
 
 (defun seq-add! (model layer-or-layers)
   "向 Sequential 模型添加层."
@@ -90,16 +93,16 @@
     ((typep component 'residual)
      (cons component
            (collect-all-layers
-             (residual-block component))))
+            (residual-block component))))
     ((typep component 'transformer-block)
      (cons component
            (mapcan
-             #'collect-all-layers
-             (list (tb-mha component)
-                   (tb-ffn1 component)
-                   (tb-ffn2 component)
-                   (tb-ln1 component)
-                   (tb-ln2 component)))))
+            #'collect-all-layers
+            (list (tb-mha component)
+                  (tb-ffn1 component)
+                  (tb-ffn2 component)
+                  (tb-ln1 component)
+                  (tb-ln2 component)))))
     (t (list component))))
 
 (defun set-model-training! (model mode)
@@ -126,7 +129,7 @@
                         (when tensor
                           (incf total
                                 (reduce #'*
-                                       (vt-shape tensor)))))))))))
+					(vt-shape tensor)))))))))))
       (count-in model))
     total))
 
@@ -180,40 +183,40 @@
   "在指定维度插入大小为 1 的维度."
   (let ((shape (vt-shape x)))
     (vt-reshape
-      x
-      (append (subseq shape 0 dim)
-              (list 1)
-              (subseq shape dim)))))
+     x
+     (append (subseq shape 0 dim)
+             (list 1)
+             (subseq shape dim)))))
 
 (defun tensor-one-hot (indices num-classes)
   "将整数索引转换为 one-hot 编码."
   (let* ((batch (reduce #'* (vt-shape indices)))
          (result-data
            (make-array
-             (list batch num-classes)
-             :element-type 'double-float
-             :initial-element 0.0d0)))
+            (list batch num-classes)
+            :element-type 'double-float
+            :initial-element 0.0d0)))
     (dotimes (i batch)
-      (let ((idx (coerce (vt-ref indices (list i))
+      (let ((idx (coerce (vt-ref indices i)
                          'fixnum)))
         (setf (aref result-data i idx) 1.0d0)))
     (vt-reshape
-      (vt-from-2d-array result-data)
-      (list batch num-classes))))
+     (vt-from-2d-array result-data)
+     (list batch num-classes))))
 
 (defun tensor-masked-fill (x mask value)
   "将 mask 为真的位置填充为 value."
   (vt-map
-    (lambda (xi mi)
-      (if (> mi 0.0d0) value xi))
-    x mask))
+   (lambda (xi mi)
+     (if (> mi 0.0d0) value xi))
+   x mask))
 
 (defun tensor-where (condition x y)
   "三元选择."
   (vt-map
-    (lambda (c xi yi)
-      (if (> c 0.0d0) xi yi))
-    condition x y))
+   (lambda (c xi yi)
+     (if (> c 0.0d0) xi yi))
+   condition x y))
 
 
 (defun model->plist (model)
@@ -229,7 +232,7 @@
                               ;; 协议修复: 取第二个元素
                               (cons (first p)
                                     (vt-data->list
-                                      (second p))))
+                                     (second p))))
                             (params l))))
               (collect-all-layers model))))
 
@@ -243,7 +246,7 @@
   "保存模型到文件."
   (with-open-file
       (out filepath :direction :output
-                     :if-exists :supersede)
+                    :if-exists :supersede)
     (print (model->plist model) out)))
 
 (defun load-model (filepath)
@@ -253,10 +256,12 @@
 
 
 (defclass neural-network-compat (sequential)
-  ((lr :initarg :lr :initform 0.001d0
-    :accessor nn-compat-lr)
-   (grad-clip :initarg :grad-clip :initform 1.0d0
-    :accessor nn-compat-grad-clip))
+  ((lr :initarg :lr
+       :initform 0.001d0
+       :accessor nn-compat-lr)
+   (grad-clip :initarg :grad-clip
+	      :initform 1.0d0
+	      :accessor nn-compat-grad-clip))
   (:documentation "兼容层."))
 
 (defun find-slot-value (obj name)
@@ -264,16 +269,16 @@
   (let ((class (class-of obj)))
     (dolist (slot (c2mop:class-slots class))
       (when (string-equal
-              (symbol-name
-                (c2mop:slot-definition-name slot))
-              name)
+             (symbol-name
+              (c2mop:slot-definition-name slot))
+             name)
         (return-from find-slot-value
           (if (slot-boundp
-                obj
-                (c2mop:slot-definition-name slot))
+               obj
+               (c2mop:slot-definition-name slot))
               (slot-value
-                obj
-                (c2mop:slot-definition-name slot))
+               obj
+               (c2mop:slot-definition-name slot))
               nil))))
     nil))
 
@@ -282,9 +287,9 @@
   (let ((class (class-of obj)))
     (dolist (slot (c2mop:class-slots class))
       (when (string-equal
-              (symbol-name
-                (c2mop:slot-definition-name slot))
-              name)
+             (symbol-name
+              (c2mop:slot-definition-name slot))
+             name)
         (return-from slot-exists-p-by-name t)))
     nil))
 
@@ -293,12 +298,12 @@
   (let ((class (class-of obj)))
     (dolist (slot (c2mop:class-slots class))
       (when (string-equal
-              (symbol-name
-                (c2mop:slot-definition-name slot))
-              name)
+             (symbol-name
+              (c2mop:slot-definition-name slot))
+             name)
         (setf (slot-value
-                obj
-                (c2mop:slot-definition-name slot))
+               obj
+               (c2mop:slot-definition-name slot))
               value)
         (return-from set-slot-value-by-name)))))
 
@@ -307,18 +312,18 @@
   (let ((new-model
           (etypecase source
             (sequential
-              (make-sequential
-                :name (concatenate
-                        'string
-                        (layer-name source) "-copy")))
+             (make-sequential
+              :name (concatenate
+                     'string
+                     (layer-name source) "-copy")))
             (layer
-              (make-instance
-                (class-of source)
-                :name (concatenate
-                        'string
-                        (layer-name source) "-copy")
-                :trainable
-                  (layer-trainable-p source))))))
+             (make-instance
+              (class-of source)
+              :name (concatenate
+                     'string
+                     (layer-name source) "-copy")
+              :trainable
+              (layer-trainable-p source))))))
     (when (typep source 'sequential)
       (dolist (orig-layer (seq-layers source))
         (let ((new-layer (copy-network orig-layer)))
@@ -338,19 +343,19 @@
                   (find-slot-value source pname)))
             (when (and src-val (vt-p src-val))
               (set-slot-value-by-name
-                new-model pname
-                (vt-copy src-val)))))))
+               new-model pname
+               (vt-copy src-val)))))))
     (when (typep source 'batch-norm)
       (dolist (stat-name '("running-mean" "running-var"))
         (when (slot-exists-p-by-name
-                source stat-name)
+               source stat-name)
           (let ((src-val
                   (find-slot-value
-                    source stat-name)))
+                   source stat-name)))
             (when (and src-val (vt-p src-val))
               (set-slot-value-by-name
-                new-model stat-name
-                (vt-copy src-val)))))))
+               new-model stat-name
+               (vt-copy src-val)))))))
     new-model))
 
 (defun tensor-top-k (x k &key (axis -1))
@@ -370,13 +375,13 @@
            (if (= actual-axis (1- rank))
                1
                (reduce #'*
-                      (subseq shape
-                              (1+ actual-axis)))))
+                       (subseq shape
+                               (1+ actual-axis)))))
          (num-slices
            (if (= actual-axis 0)
                1
                (reduce #'*
-                      (subseq shape 0 actual-axis))))
+                       (subseq shape 0 actual-axis))))
          (slice-size (* axis-size tail-size))
          (out-slice-size (* effective-k tail-size))
          (flat-x (vt-flatten x))
@@ -417,14 +422,14 @@
                             (+ dst-offset j))
                       src-axis-idx)))))))
     (values
-      (vt-reshape
-        (vt-from-sequence
-          (coerce result-vals 'list))
-        out-shape)
-      (vt-reshape
-        (vt-from-sequence
-          (coerce result-idxs 'list))
-        out-shape))))
+     (vt-reshape
+      (vt-from-sequence
+       (coerce result-vals 'list))
+      out-shape)
+     (vt-reshape
+      (vt-from-sequence
+       (coerce result-idxs 'list))
+      out-shape))))
 
 (defgeneric zero-grad! (component)
   (:documentation "递归清零梯度.")
@@ -458,3 +463,65 @@
 (defun clear-all-gradients! (model)
   "zero-grad! 的别名."
   (zero-grad! model))
+
+(defgeneric clear-forward-cache! (component)
+  (:documentation "清空前向传播产生的中间缓存, 仅保留参数和梯度.")
+  (:method ((c t)) nil)
+  (:method ((component layer))
+    (let ((class (class-of component)))
+      (dolist (slot (c2mop:class-slots class))
+        (let ((name (c2mop:slot-definition-name slot)))
+          (when (and (slot-boundp component name)
+                     (let ((sname (symbol-name name)))
+                       ;; 匹配所有缓存 slot 和非梯度的状态量
+                       (or (search "cache" sname)
+                           (string= sname "BATCH-SIZE")
+                           (string= sname "NORM-SIZE")
+                           (string= sname "INDICES-CACHE"))))
+            (setf (slot-value component name) nil))))))
+  (:method ((component sequential))
+    (dolist (layer (seq-layers component))
+      (clear-forward-cache! layer)))
+  (:method ((component residual))
+    (clear-forward-cache! (residual-block component)))
+  (:method ((component transformer-block))
+    (clear-forward-cache! (tb-mha component))
+    (clear-forward-cache! (tb-ffn1 component))
+    (clear-forward-cache! (tb-ffn2 component))
+    (clear-forward-cache! (tb-ln1 component))
+    (clear-forward-cache! (tb-ln2 component))))
+
+(defun build-model (model &optional dummy-input)
+  "强制初始化模型中所有延迟参数.
+   
+   对于 LSTM/GRU/MHA 等构造时已知维度的层, 直接初始化.
+   对于 Dense/Conv 等依赖输入维度的层, 必须提供 DUMMY-INPUT 
+   执行一次虚拟前向传播来推断维度.
+   
+   执行完毕后会自动清理产生的中间缓存, 模型处于干净可用状态.
+   
+   示例:
+     (build-model my-lstm) ; 纯 RNN 不需要 dummy-input
+     (build-model my-cnn (vt-zeros (list 1 3 28 28))) ; CNN 需要"
+  ;; 1. 显式触发那些不需要输入就能构建的层
+  (dolist (l (collect-all-layers model))
+    (typecase l
+      (lstm (ensure-lstm-params l))
+      (gru (ensure-gru-params l))
+      (rnn-cell (ensure-rnn-cell-params l))
+      (multi-head-attention (ensure-mha-params l))
+      ;; Embedding 只需知道词表大小即可初始化
+      (embedding 
+       (unless (emb-weight l)
+         ;; 传入一个假的索引 0 触发初始化
+         (forward l (vt-zeros (list 1)))))
+      (t nil)))
+  
+  ;; 2. 如果提供了 dummy-input，跑一次前向传播打通剩余层
+  (when dummy-input
+    (forward model dummy-input))
+  
+  ;; 3. 核心步骤：清理 dry-run 留下的所有垃圾缓存
+  (clear-forward-cache! model)
+  
+  model)

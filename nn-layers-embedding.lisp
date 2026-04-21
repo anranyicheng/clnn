@@ -2,23 +2,32 @@
 
 (defclass embedding (layer)
   ((num-embeddings :initarg :num-embeddings
-    :reader emb-num-embeddings :type fixnum
-    :documentation "词汇表大小")
+		   :initform 0
+		   :reader emb-num-embeddings :type fixnum
+		   :documentation "词汇表大小")
    (embedding-dim :initarg :embedding-dim
-    :reader emb-embedding-dim :type fixnum
-    :documentation "嵌入维度")
-   (max-norm :initarg :max-norm :initform nil
-    :accessor emb-max-norm
-    :type (or null double-float))
+		  :initform 0
+		  :reader emb-embedding-dim :type fixnum
+		  :documentation "嵌入维度")
+   (max-norm :initarg :max-norm
+	     :initform nil
+	     :accessor emb-max-norm
+	     :type (or null double-float))
    (scale-grad-by-freq :initarg :scale-grad-by-freq
-    :initform nil
-    :accessor emb-scale-grad-by-freq)
+		       :initform nil
+		       :accessor emb-scale-grad-by-freq)
 
-   (weight :accessor emb-weight :type (or null vt))
+   (weight :initarg :weight
+	   :initform nil
+	   :accessor emb-weight :type (or null vt))
    ;; 梯度
-   (dw :accessor emb-dw :type (or null vt))
+   (dw :initarg :dw
+       :initform nil
+       :accessor emb-dw
+       :type (or null vt))
    ;; 缓存
-   (indices-cache :accessor emb-indices-cache))
+   (indices-cache :initarg :indices-cache
+		  :accessor emb-indices-cache))
   (:documentation "词嵌入层."))
 
 (defun make-embedding
@@ -26,11 +35,11 @@
      &key max-norm scale-grad-by-freq
        (name "embedding") (trainable t))
   (make-instance 'embedding
-    :num-embeddings num-embeddings
-    :embedding-dim embedding-dim
-    :max-norm max-norm
-    :scale-grad-by-freq scale-grad-by-freq
-    :name name :trainable trainable))
+		 :num-embeddings num-embeddings
+		 :embedding-dim embedding-dim
+		 :max-norm max-norm
+		 :scale-grad-by-freq scale-grad-by-freq
+		 :name name :trainable trainable))
 
 (defmethod forward ((l embedding) indices)
   "前向传播: 查表获取嵌入向量."
@@ -38,10 +47,10 @@
   (unless (emb-weight l)
     (setf (emb-weight l)
           (vt-scale
-            (vt-random-normal
-              (list (emb-num-embeddings l)
-                    (emb-embedding-dim l)))
-            0.01d0)))
+           (vt-random-normal
+            (list (emb-num-embeddings l)
+                  (emb-embedding-dim l)))
+           0.01d0)))
   ;; 先缓存 indices
   (setf (emb-indices-cache l) indices)
   (let* ((weights (emb-weight l))
@@ -76,17 +85,17 @@
     (dotimes (i flat-size)
       (let ((idx-val
               (coerce
-                (vt-ref flat-idx (list i))
-                'fixnum)))
+               (vt-ref flat-idx i)
+               'fixnum)))
         (dotimes (j ed)
           (incf (aref dw-data idx-val j)
                 (coerce
-                  (vt-ref flat-go (list i j))
-                  'double-float)))))
+                 (vt-ref flat-go i j)
+                 'double-float)))))
     (setf (emb-dw l)
           (vt-reshape
-            (vt-from-2d-array dw-data)
-            (list ne ed)))))
+           (vt-from-2d-array dw-data)
+           (list ne ed)))))
 
 (defmethod params ((l embedding))
   (when (emb-weight l)

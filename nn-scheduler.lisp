@@ -1,16 +1,25 @@
 (in-package #:nn)
 
 (defclass lr-scheduler ()
-  ((optimizer :initarg :optimizer :reader scheduler-optimizer)
-   (name :initarg :name :initform "scheduler"
-    :accessor scheduler-name :type string)
-   (last-lr :accessor scheduler-last-lr :type double-float)
-   (step-count :initform 0 :accessor scheduler-step-count))
+  ((optimizer :initarg :optimizer
+	      :initform nil
+	      :reader scheduler-optimizer)
+   (name :initarg :name
+	 :initform "scheduler"
+	 :accessor scheduler-name
+	 :type string)
+   (last-lr :initarg :last-lr
+	    :initform 0.0d0
+	    :accessor scheduler-last-lr
+	    :type double-float)
+   (step-count :initform 0
+	       :initarg :step-count
+	       :accessor scheduler-step-count))
   (:documentation "学习率调度器基类."))
 
 (defun make-lr-scheduler (optimizer &key (name "scheduler"))
   (let ((s (make-instance 'lr-scheduler
-             :optimizer optimizer :name name)))
+			  :optimizer optimizer :name name)))
     (setf (scheduler-last-lr s) (optimizer-lr optimizer))
     s))
 
@@ -23,17 +32,19 @@
     (optimizer-lr (scheduler-optimizer s))))
 
 (defclass step-lr (lr-scheduler)
-  ((step-size :initarg :step-size :initform 10
-    :reader step-lr-step-size)
-   (gamma :initarg :gamma :initform 0.1d0
-    :reader step-lr-gamma))
+  ((step-size :initarg :step-size
+	      :initform 10
+	      :reader step-lr-step-size)
+   (gamma :initarg :gamma
+	  :initform 0.1d0
+	  :reader step-lr-gamma))
   (:documentation "每 step_size 个 epoch 将学习率乘以 gamma."))
 
 (defun make-step-lr (optimizer step-size &key gamma)
   (let ((s (make-instance 'step-lr
-             :optimizer optimizer
-             :step-size step-size
-             :gamma (or gamma 0.1d0))))
+			  :optimizer optimizer
+			  :step-size step-size
+			  :gamma (or gamma 0.1d0))))
     (setf (scheduler-last-lr s) (optimizer-lr optimizer))
     s))
 
@@ -49,14 +60,15 @@
 
 
 (defclass exponential-lr (lr-scheduler)
-  ((gamma :initarg :gamma :initform 0.95d0
-    :reader exp-lr-gamma))
+  ((gamma :initarg :gamma
+	  :initform 0.95d0
+	  :reader exp-lr-gamma))
   (:documentation "每个 epoch 将学习率乘以 gamma."))
 
 (defun make-exponential-lr (optimizer &key gamma)
   (let ((s (make-instance 'exponential-lr
-             :optimizer optimizer
-             :gamma (or gamma 0.95d0))))
+			  :optimizer optimizer
+			  :gamma (or gamma 0.95d0))))
     (setf (scheduler-last-lr s) (optimizer-lr optimizer))
     s))
 
@@ -71,19 +83,23 @@
 
 
 (defclass cosine-annealing-lr (lr-scheduler)
-  ((t-max :initarg :t-max :initform 100
-    :reader cos-lr-t-max)
-   (eta-min :initarg :eta-min :initform 0.0d0
-    :reader cos-lr-eta-min)
-   (base-lr :accessor cos-lr-base-lr))
+  ((t-max :initarg :t-max
+	  :initform 100
+	  :reader cos-lr-t-max)
+   (eta-min :initarg :eta-min
+	    :initform 0.0d0
+	    :reader cos-lr-eta-min)
+   (base-lr :initarg :base-lr
+	    :initform 0.0d0
+	    :accessor cos-lr-base-lr))
   (:documentation "余弦退火调度."))
 
 (defun make-cosine-annealing-lr (optimizer t-max
-                                &key eta-min)
+                                 &key eta-min)
   (let ((s (make-instance 'cosine-annealing-lr
-             :optimizer optimizer
-             :t-max t-max
-             :eta-min (or eta-min 0.0d0))))
+			  :optimizer optimizer
+			  :t-max t-max
+			  :eta-min (or eta-min 0.0d0))))
     (setf (cos-lr-base-lr s) (optimizer-lr optimizer))
     (setf (scheduler-last-lr s) (optimizer-lr optimizer))
     s))
@@ -105,31 +121,39 @@
 
 
 (defclass reduce-on-plateau (lr-scheduler)
-  ((mode :initarg :mode :initform :min :reader rop-mode)
-   (factor :initarg :factor :initform 0.1d0
-    :reader rop-factor)
-   (patience :initarg :patience :initform 10
-    :reader rop-patience)
-   (threshold :initarg :threshold :initform 1.0d-4
-    :reader rop-threshold)
-   (min-lr :initarg :min-lr :initform 1.0d-6
-    :reader rop-min-lr)
+  ((mode :initarg :mode
+	 :initform :min
+	 :reader rop-mode)
+   (factor :initarg :factor
+	   :initform 0.1d0
+	   :reader rop-factor)
+   (patience :initarg :patience
+	     :initform 10
+	     :reader rop-patience)
+   (threshold :initarg :threshold
+	      :initform 1.0d-4
+	      :reader rop-threshold)
+   (min-lr :initarg :min-lr
+	   :initform 1.0d-6
+	   :reader rop-min-lr)
    (best-metric :initform nil
-    :accessor rop-best-metric)
+		:initarg :best-metric
+		:accessor rop-best-metric)
    (num-bad-epochs :initform 0
-    :accessor rop-num-bad-epochs))
+		   :initarg :num-bad-epochs
+		   :accessor rop-num-bad-epochs))
   (:documentation "当指标不再改善时降低学习率."))
 
 (defun make-reduce-on-plateau (optimizer
                                &key mode factor
                                  patience threshold min-lr)
   (let ((s (make-instance 'reduce-on-plateau
-             :optimizer optimizer
-             :mode (or mode :min)
-             :factor (or factor 0.1d0)
-             :patience (or patience 10)
-             :threshold (or threshold 1.0d-4)
-             :min-lr (or min-lr 1.0d-6))))
+			  :optimizer optimizer
+			  :mode (or mode :min)
+			  :factor (or factor 0.1d0)
+			  :patience (or patience 10)
+			  :threshold (or threshold 1.0d-4)
+			  :min-lr (or min-lr 1.0d-6))))
     (setf (scheduler-last-lr s) (optimizer-lr optimizer))
     s))
 
@@ -168,21 +192,26 @@
 
 (defclass warmup-cosine-lr (lr-scheduler)
   ((warmup-steps :initarg :warmup-steps
-    :reader warmup-warmup-steps)
+		 :initform nil
+		 :reader warmup-warmup-steps)
    (total-steps :initarg :total-steps
-    :reader warmup-total-steps)
-   (min-lr :initarg :min-lr :initform 0.0d0
-    :reader warmup-min-lr)
-   (base-lr :accessor warmup-base-lr))
+		:initform nil
+		:reader warmup-total-steps)
+   (min-lr :initarg :min-lr
+	   :initform 0.0d0
+	   :reader warmup-min-lr)
+   (base-lr :initarg :base-lr
+	    :initform 0.0d0
+	    :accessor warmup-base-lr))
   (:documentation "Warmup + Cosine Decay 调度."))
 
 (defun make-warmup-cosine-lr (optimizer warmup-steps
                               total-steps &key min-lr)
   (let ((s (make-instance 'warmup-cosine-lr
-             :optimizer optimizer
-             :warmup-steps warmup-steps
-             :total-steps total-steps
-             :min-lr (or min-lr 0.0d0))))
+			  :optimizer optimizer
+			  :warmup-steps warmup-steps
+			  :total-steps total-steps
+			  :min-lr (or min-lr 0.0d0))))
     (setf (warmup-base-lr s) (optimizer-lr optimizer))
     (setf (scheduler-last-lr s) (optimizer-lr optimizer))
     s))
@@ -200,8 +229,7 @@
            (cond
              ;; 线性 warmup
              ((< step warmup)
-              (* base (/ (coerce step 'double-float)
-                         (coerce warmup 'double-float))))
+              (* base (/ step warmup 1.0d0)))
              ;; Cosine decay
              ((<= step total)
               (+ min-lr
@@ -216,16 +244,24 @@
 
 
 (defclass one-cycle-lr (lr-scheduler)
-  ((max-lr :initarg :max-lr :reader one-cycle-max-lr)
+  ((max-lr :initarg :max-lr
+	   :initform 0.0d0
+	   :reader one-cycle-max-lr)
    (total-steps :initarg :total-steps
-    :reader one-cycle-total-steps)
-   (pct-start :initarg :pct-start :initform 0.3d0
-    :reader one-cycle-pct-start)
-   (div-factor :initarg :div-factor :initform 25.0d0
-    :reader one-cycle-div-factor)
+		:initform 0
+		:reader one-cycle-total-steps)
+   (pct-start :initarg :pct-start
+	      :initform 0.3d0
+	      :reader one-cycle-pct-start)
+   (div-factor :initarg :div-factor
+	       :initform 25.0d0
+	       :reader one-cycle-div-factor)
    (final-div-factor :initarg :final-div-factor
-    :initform 1.0d4 :reader one-cycle-final-div-factor)
-   (base-lr :accessor one-cycle-base-lr))
+		     :initform 1.0d4
+		     :reader one-cycle-final-div-factor)
+   (base-lr :initarg :base-lr
+	    :initform 0.0d0
+	    :accessor one-cycle-base-lr))
   (:documentation "1Cycle 策略."))
 
 (defun make-one-cycle-lr (optimizer max-lr total-steps
@@ -233,13 +269,13 @@
                             div-factor
                             final-div-factor)
   (let ((s (make-instance 'one-cycle-lr
-             :optimizer optimizer
-             :max-lr max-lr
-             :total-steps total-steps
-             :pct-start (or pct-start 0.3d0)
-             :div-factor (or div-factor 25.0d0)
-             :final-div-factor
-               (or final-div-factor 1.0d4))))
+			  :optimizer optimizer
+			  :max-lr max-lr
+			  :total-steps total-steps
+			  :pct-start (or pct-start 0.3d0)
+			  :div-factor (or div-factor 25.0d0)
+			  :final-div-factor
+			  (or final-div-factor 1.0d4))))
     (setf (one-cycle-base-lr s)
           (/ max-lr (one-cycle-div-factor s)))
     (setf (scheduler-last-lr s) (optimizer-lr optimizer))
@@ -263,15 +299,13 @@
              ((< step start-step)
               (+ base
                  (* (- max-lr base)
-                    (/ (coerce step 'double-float)
-                       (coerce start-step 'double-float)))))
+                    (/ step start-step 1.0d0))))
              ;; 下降阶段
              ((<= step total)
               (let* ((progress
-                       (/ (coerce (- step start-step)
-                                 'double-float)
-                          (coerce (- total start-step)
-                                  'double-float)))
+                       (/ (- step start-step)
+                          (- total start-step)
+			  1.0d0))
                      (cos-val (cos (* pi progress))))
                 (+ final-lr
                    (* (- max-lr final-lr)

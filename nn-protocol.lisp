@@ -13,13 +13,19 @@
 
 
 (defclass layer ()
-  ((name :initarg :name :initform "" :accessor layer-name
-    :type string :documentation "层名称")
-   (trainable :initarg :trainable :initform t
-    :accessor layer-trainable-p :type boolean
-    :documentation "是否参与训练")
-   (training :initform *training-mode* :accessor layer-training
-    :type boolean :documentation "内部训练状态"))
+  ((name :initarg :name
+	 :initform ""
+	 :accessor layer-name
+	 :type string
+	 :documentation "层名称")
+   (trainable :initarg :trainable
+	      :initform t
+	      :accessor layer-trainable-p
+	      :type boolean
+	      :documentation "是否参与训练")
+   (training :initform *training-mode*
+	     :accessor layer-training
+	     :type boolean :documentation "内部训练状态"))
   (:documentation "所有神经网络层的基类."))
 
 (defun make-layer (&rest args)
@@ -54,12 +60,15 @@
 
 
 (defclass loss ()
-  ((name :initarg :name :initform "loss" :accessor loss-name
-    :type string)
-   (reduction :initarg :reduction :initform :mean
-    :accessor loss-reduction
-    :type (member :mean :sum :none)
-    :documentation "归约方式: :mean / :sum / :none"))
+  ((name :initarg :name
+	 :initform "loss"
+	 :accessor loss-name
+	 :type string)
+   (reduction :initarg :reduction
+	      :initform :mean
+	      :accessor loss-reduction
+	      :type (member :mean :sum :none)
+	      :documentation "归约方式: :mean / :sum / :none"))
   (:documentation "损失函数基类."))
 
 (defgeneric compute-loss (loss-fn predicted target)
@@ -70,19 +79,28 @@
 
 
 (defclass optimizer ()
-  ((lr :initarg :lr :initform 1e-3 :accessor optimizer-lr
-    :type double-float :documentation "学习率")
-   (grad-clip :initarg :grad-clip :initform 0.0d0
-    :accessor optimizer-grad-clip :type double-float
-    :documentation "梯度裁剪阈值 (0=不裁剪)")
-   (weight-decay :initarg :weight-decay :initform 0.0d0
-    :accessor optimizer-weight-decay :type double-float
-    :documentation "L2 正则化系数")
-   (step-count :initform 0 :accessor optimizer-step-count
-    :type fixnum :documentation "已执行步数")
-   ;; 修复: 使用 equal 测试以支持字符串键
+  ((lr :initarg :lr
+       :initform 1e-3
+       :accessor optimizer-lr
+       :type double-float
+       :documentation "学习率")
+   (grad-clip :initarg :grad-clip
+	      :initform 0.0d0
+	      :accessor optimizer-grad-clip
+	      :type double-float
+	      :documentation "梯度裁剪阈值 (0=不裁剪)")
+   (weight-decay :initarg :weight-decay
+		 :initform 0.0d0
+		 :accessor optimizer-weight-decay
+		 :type double-float
+		 :documentation "L2 正则化系数")
+   (step-count :initform 0
+	       :accessor optimizer-step-count
+	       :type fixnum
+	       :documentation "已执行步数")
    (state-registry :initform (make-hash-table :test #'equal)
-    :accessor optimizer-state-registry))
+		   :initarg :state-registry
+		   :accessor optimizer-state-registry))
   (:documentation "优化器基类."))
 
 (defun make-optimizer (&rest args)
@@ -99,8 +117,10 @@ GRAD-LIST = ((name . tensor) ...)"))
 
 
 (defclass initializer ()
-  ((name :initarg :name :initform "init" :accessor initializer-name
-    :type string))
+  ((name :initarg :name
+	 :initform "init"
+	 :accessor initializer-name
+	 :type string))
   (:documentation "参数初始化器基类."))
 
 (defgeneric init-weight (init shape &key fan-in fan-out)
@@ -113,8 +133,9 @@ GRAD-LIST = ((name . tensor) ...)"))
 
 
 (defclass regularizer ()
-  ((name :initarg :name :initform "regularizer"
-    :accessor regularizer-name))
+  ((name :initarg :name
+	 :initform "regularizer"
+	 :accessor regularizer-name))
   (:documentation "参数正则化器基类."))
 
 (defgeneric regularizer-penalty (reg param-list)

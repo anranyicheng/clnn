@@ -27,11 +27,11 @@
                          (val (if (and (>= ih 0) (< ih in-h)
                                        (>= iw 0) (< iw in-w))
                                   (coerce (vt-ref input
-                                                 (list b c ih iw))
+                                                  b c ih iw)
                                           'double-float)
                                   0.0d0))
                          (col-idx (+ (* c kh kw)
-                                    (* ki kw) kj)))
+                                     (* ki kw) kj)))
                     (setf (aref result-data row-idx col-idx)
                           val)))))))))
     (let* ((total (* col-rows col-cols))
@@ -43,7 +43,7 @@
                   (list col-rows col-cols)))))
 
 
-  (defun col2im (col kh kw sh sw ph pw in-shape)
+(defun col2im (col kh kw sh sw ph pw in-shape)
   "col2im 逆操作."
   (let* ((batch (first in-shape))
          (channels (second in-shape))
@@ -69,9 +69,8 @@
                                      (* ki kw) kj))
                          (col-val
                            (coerce
-                             (vt-ref col
-                                     (list row-idx col-idx))
-                             'double-float)))
+                            (vt-ref col row-idx col-idx)
+                            'double-float)))
                     (when (and (>= ih 0) (< ih in-h)
                                (>= iw 0) (< iw in-w))
                       (incf (aref result-data b c ih iw)
@@ -88,47 +87,71 @@
 
 
 (defclass conv2d (layer)
-  ((in-channels :initarg :in-channels :initform nil
-    :reader conv-in-channels)
+  ((in-channels :initarg :in-channels
+		:initform nil
+		:reader conv-in-channels)
    (out-channels :initarg :out-channels
-    :reader conv-out-channels)
+		 :reader conv-out-channels)
    (kernel-size :initarg :kernel-size
-    :reader conv-kernel-size)
-   (stride :initarg :stride :initform '(1 1)
-    :reader conv-stride)
-   (padding :initarg :padding :initform '(0 0)
-    :reader conv-padding)
-   (use-bias :initarg :use-bias :initform t
-    :reader conv-use-bias-p)
-   (weight-init :initarg :weight-init :initform nil
-    :accessor conv-weight-init)
-   (weights :accessor conv-weights :type (or null vt))
-   (bias :accessor conv-bias :type (or null vt))
-   (dw :accessor conv-dw :type (or null vt))
-   (db :accessor conv-db :type (or null vt))
-   (input-cache :accessor conv-input-cache)
-   (col-cache :accessor conv-col-cache)
-   (output-shape-cache :accessor conv-output-shape-cache))
+		:initform nil
+		:reader conv-kernel-size)
+   (stride :initarg :stride
+	   :initform '(1 1)
+	   :reader conv-stride)
+   (padding :initarg :padding
+	    :initform '(0 0)
+	    :reader conv-padding)
+   (use-bias :initarg :use-bias
+	     :initform t
+	     :reader conv-use-bias-p)
+   (weight-init :initarg :weight-init
+		:initform nil
+		:accessor conv-weight-init)
+   (weights :initarg :weights
+	    :initform nil
+	    :accessor conv-weights
+	    :type (or null vt))
+   (bias :initarg :bias
+	 :initform nil
+	 :accessor conv-bias
+	 :type (or null vt))
+   (dw :initarg :dw
+       :initform nil
+       :accessor conv-dw
+       :type (or null vt))
+   (db :initarg :db
+       :initform nil
+       :accessor conv-db
+       :type (or null vt))
+   (input-cache :initarg :input-cache
+		:initform nil
+		:accessor conv-input-cache)
+   (col-cache :initarg :col-cache
+	      :initform nil
+	      :accessor conv-col-cache)
+   (output-shape-cache :initarg :output-shape-cache
+		       :initform nil
+		       :accessor conv-output-shape-cache))
   (:documentation "2D 卷积层 (基于 im2col)."))
 
 (defun make-conv2d (out-channels kernel-size
-                   &key in-channels stride padding
-                     use-bias weight-init
-                     (name "conv2d") (trainable t))
+                    &key in-channels stride padding
+                      use-bias weight-init
+                      (name "conv2d") (trainable t))
   (let ((ks (if (listp kernel-size) kernel-size
-               (list kernel-size kernel-size)))
+		(list kernel-size kernel-size)))
         (st (if stride (if (listp stride) stride
-                          (list stride stride))
-               '(1 1)))
+                           (list stride stride))
+		'(1 1)))
         (pd (if padding (if (listp padding) padding
-                           (list padding padding))
-               '(0 0))))
+                            (list padding padding))
+		'(0 0))))
     (make-instance 'conv2d
-      :out-channels out-channels
-      :kernel-size ks :stride st :padding pd
-      :use-bias use-bias :in-channels in-channels
-      :weight-init weight-init
-      :name name :trainable trainable)))
+		   :out-channels out-channels
+		   :kernel-size ks :stride st :padding pd
+		   :use-bias use-bias :in-channels in-channels
+		   :weight-init weight-init
+		   :name name :trainable trainable)))
 
 (defun compute-conv-output-shape
     (in-h in-w kh kw sh sw ph pw)
@@ -149,7 +172,7 @@
          (ph (first (conv-padding l)))
          (pw (second (conv-padding l)))
          (oh-ow (compute-conv-output-shape
-                  in-h in-w kh kw sh sw ph pw))
+                 in-h in-w kh kw sh sw ph pw))
          (oh (first oh-ow))
          (ow (second oh-ow))
          (w (or (conv-weights l)
@@ -178,7 +201,7 @@
                                    (list batch out-c oh ow)))
          (out (if b
                   (let ((b-view (vt-reshape b
-                                           (list 1 out-c 1 1))))
+                                            (list 1 out-c 1 1))))
                     (vt-+ out-reshaped b-view))
                   out-reshaped)))
     (setf (conv-input-cache l) input)
@@ -242,26 +265,30 @@
 
 (defclass max-pool2d (layer)
   ((kernel-size :initarg :kernel-size
-    :reader pool-kernel-size)
-   (stride :initarg :stride :initform nil
-    :reader pool-stride)
-   (padding :initarg :padding :initform '(0 0)
-    :reader pool-padding)
-   (cache :accessor pool-cache))
+		:initform nil
+		:reader pool-kernel-size)
+   (stride :initarg :stride
+	   :initform nil
+	   :reader pool-stride)
+   (padding :initarg :padding
+	    :initform '(0 0)
+	    :reader pool-padding)
+   (cache :initarg :cache
+	  :accessor pool-cache))
   (:documentation "2D 最大池化."))
 
 (defun make-max-pool2d (kernel-size &key stride padding
-                       (name "max-pool2d") (trainable nil))
+				      (name "max-pool2d") (trainable nil))
   (let ((ks (if (listp kernel-size) kernel-size
-               (list kernel-size kernel-size))))
+		(list kernel-size kernel-size))))
     (make-instance 'max-pool2d
-      :kernel-size ks
-      :stride (or stride ks)
-      :padding (if padding
-                   (if (listp padding) padding
-                     (list padding padding))
-                   '(0 0))
-      :name name :trainable trainable)))
+		   :kernel-size ks
+		   :stride (or stride ks)
+		   :padding (if padding
+				(if (listp padding) padding
+				    (list padding padding))
+				'(0 0))
+		   :name name :trainable trainable)))
 
 (defmethod forward ((l max-pool2d) input)
   (let* ((shape (vt-shape input))
@@ -294,8 +321,7 @@
                   (let* ((ih (+ (* i sh) ki))
                          (iw (+ (* j sw) kj))
                          (val (coerce
-                               (vt-ref input
-                                       (list b c ih iw))
+                               (vt-ref input b c ih iw)
                                'double-float)))
                     (when (> val max-val)
                       (setf max-val val
@@ -304,7 +330,7 @@
               (setf (aref mask-data b c i j) max-idx))))))
     (setf (pool-cache l) (cons input mask-data))
     (let* ((total (reduce #'*
-                    (list batch channels oh ow)))
+			  (list batch channels oh ow)))
            (flat (make-array total
                              :element-type 'double-float)))
       (dotimes (i total)
@@ -338,9 +364,8 @@
           (dotimes (j ow)
             (let* ((grad-val
                      (coerce
-                       (vt-ref grad-output
-                               (list b c i j))
-                       'double-float))
+                      (vt-ref grad-output b c i j)
+                      'double-float))
                    (idx (aref mask b c i j))
                    (ki (floor idx kw))
                    (kj (rem idx kw))
@@ -348,7 +373,10 @@
                    (iw (+ (* j sw) kj))
                    (flat-idx
                      (+ (* (+ (* (+ (* b channels) c)
-                                 in-h) ih) in-w) iw)))
+                                 in-h)
+			      ih)
+			   in-w)
+			iw)))
               (incf (aref result-data flat-idx)
                     grad-val))))))
     (let* ((total (reduce #'* shape))
@@ -363,26 +391,32 @@
 
 (defclass avg-pool2d (layer)
   ((kernel-size :initarg :kernel-size
-    :reader apool-kernel-size)
-   (stride :initarg :stride :initform nil
-    :reader apool-stride)
-   (padding :initarg :padding :initform '(0 0)
-    :reader apool-padding)
-   (input-cache :accessor apool-input-cache))
+		:initform nil
+		:reader apool-kernel-size)
+   (stride :initarg :stride
+	   :initform nil
+	   :reader apool-stride)
+   (padding :initarg :padding
+	    :initform '(0 0)
+	    :reader apool-padding)
+   (input-cache :initarg :input-cache
+		:initform nil
+		:accessor apool-input-cache))
   (:documentation "2D 平均池化."))
 
-(defun make-avg-pool2d (kernel-size &key stride padding
-                       (name "avg-pool2d") (trainable nil))
+(defun make-avg-pool2d
+    (kernel-size &key stride padding
+		   (name "avg-pool2d") (trainable nil))
   (let ((ks (if (listp kernel-size) kernel-size
-               (list kernel-size kernel-size))))
+		(list kernel-size kernel-size))))
     (make-instance 'avg-pool2d
-      :kernel-size ks
-      :stride (or stride ks)
-      :padding (if padding
-                   (if (listp padding) padding
-                     (list padding padding))
-                   '(0 0))
-      :name name :trainable trainable)))
+		   :kernel-size ks
+		   :stride (or stride ks)
+		   :padding (if padding
+				(if (listp padding) padding
+				    (list padding padding))
+				'(0 0))
+		   :name name :trainable trainable)))
 
 (defmethod forward ((l avg-pool2d) input)
   (setf (apool-input-cache l) input)
@@ -412,14 +446,15 @@
                   (incf sum
                         (coerce
                          (vt-ref input
-                                 (list b c
-                                       (+ (* i sh) ki)
-                                       (+ (* j sw) kj)))
+                                 b
+				 c
+                                 (+ (* i sh) ki)
+                                 (+ (* j sw) kj))
                          'double-float))))
               (setf (aref result-data b c i j)
                     (/ sum pool-size)))))))
     (let* ((total (reduce #'*
-                    (list batch channels oh ow)))
+			  (list batch channels oh ow)))
            (flat (make-array total
                              :element-type 'double-float)))
       (dotimes (i total)
@@ -451,17 +486,17 @@
         (dotimes (i oh)
           (dotimes (j ow)
             (let ((grad (/ (coerce (vt-ref grad-output
-                                          (list b c i j))
+                                           b c i j)
                                    'double-float)
-                          pool-size)))
+                           pool-size)))
               (dotimes (ki kh)
                 (dotimes (kj kw)
                   (let* ((ih (+ (* i sh) ki))
                          (iw (+ (* j sw) kj))
                          (flat-idx
                            (+ (* (+ (* (+ (* b channels) c)
-                                      in-h) ih)
-                                in-w)
+                                       in-h) ih)
+                                 in-w)
                               iw)))
                     (incf (aref result-data flat-idx)
                           grad)))))))))
@@ -480,7 +515,7 @@
 (defun make-global-avg-pool2d
     (&key (name "global-avg-pool2d") (trainable nil))
   (make-instance 'global-avg-pool2d
-    :name name :trainable trainable))
+		 :name name :trainable trainable))
 
 (defmethod forward ((l global-avg-pool2d) input)
   (let* ((shape (vt-shape input))
@@ -498,7 +533,7 @@
   (let* ((shape (gap-cache-shape l))
          (h (third shape))
          (w (fourth shape))
-         (hw (coerce (* h w) 'double-float))
+         (hw (* h w))
          ;; 显式构造全 1 张量相乘，消除对隐式广播的依赖
          (grad-scaled
            (vt-* (vt-reshape grad-output
