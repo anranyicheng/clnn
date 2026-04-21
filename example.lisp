@@ -14,35 +14,33 @@
     (let ((x-list '())
           (y-list '())
           (range (- x-max x-min)))
-      (dotimes (_ batch-size)
+      (dotimes (idx batch-size)
         (let ((x (+ x-min (random range))))
           (push x x-list)
           (push (funcall fn x) y-list)))
       (values
-        (vt-reshape
-          (vt-from-sequence (nreverse x-list))
-          (list batch-size 1))
-        (vt-reshape
-          (vt-from-sequence (nreverse y-list))
-          (list batch-size 1))))))
+       (vt-reshape
+        (vt-from-sequence (nreverse x-list))
+        (list batch-size 1))
+       (vt-reshape
+        (vt-from-sequence (nreverse y-list))
+        (list batch-size 1))))))
 
 ;;; ----------------------------------------------------------------
 ;;; 2. 核心训练引擎
 ;;; ----------------------------------------------------------------
 (defun run-regression-test
-  (fn x-min x-max input-dim layer-specs
-   &key (epochs 500) (batch-size 32)
-        (opt-type :sgd) (opt-args '(:lr 0.01d0))
-        (test-inputs '(-2.0d0 -1.0d0 0.0d0 1.0d0 2.0d0))
-        (name "MLP"))
+    (fn x-min x-max input-dim layer-specs
+     &key (epochs 500) (batch-size 32)
+       (opt-type :sgd) (opt-args '(:lr 0.01d0))
+       (test-inputs '(-2.0d0 -1.0d0 0.0d0 1.0d0 2.0d0))
+       (name "MLP"))
   "通用的单变量/多变量回归测试函数。
-   
    LAYER-SPECS: 例如 ((16 :relu) (32 :relu) (1 :none))
    OPT-TYPE: :sgd, :adam, :adamw 等
    OPT-ARGS: 传给优化器的关键字参数列表"
   (let* ((gen-fn (make-data-gen fn x-min x-max))
          (model (make-sequential :name name)))
-    
     ;; 动态构建网络层
     (dolist (spec layer-specs)
       (seq-add! model
@@ -50,12 +48,10 @@
                        (first spec)
                        :activation (second spec)
                        :name (format nil "~A-L~A" name (first spec))
-                       (cddr spec))))
-    
+                       (cddr spec))))    
     ;; 显式构建并打印参数量
     (build-model model (vt-zeros (list 1 input-dim)))
-    (format t "[~A] 模型参数量: ~A~%" name (param-count model))
-    
+    (format t "[~A] 模型参数量: ~A~%" name (param-count model))    
     ;; 实例化优化器
     (let ((optimizer
             (ecase opt-type
@@ -63,13 +59,12 @@
               (:adam (apply #'make-adam opt-args))
               (:adamw (apply #'make-adamw opt-args))
               (:rmsprop (apply #'make-rmsprop opt-args)))))
-      
       (format t "[~A] 开始训练 (~A Epochs)...~%" name epochs)
-      (format t "----------------------------------------~%")
-      
+      (format t "----------------------------------------~%")      
       ;; 训练循环
       (dotimes (epoch epochs)
-        (multiple-value-bind (x y) (funcall gen-fn batch-size)
+        (multiple-value-bind (x y)
+	    (funcall gen-fn batch-size)
           (zero-grad! model)
           (let* ((pred (model-forward model x))
                  (diff (vt-- pred y))
@@ -80,16 +75,14 @@
             (model-update! model optimizer)
             (when (zerop (mod epoch 100))
               (format t "Epoch ~4D | Loss: ~6F~%"
-                      epoch loss-val)))))
-      
+                      epoch loss-val)))))      
       (format t "----------------------------------------~%")
-      
       ;; 推理测试
       (when test-inputs
         (let* ((len (length test-inputs))
                (test-x (vt-reshape
-                         (vt-from-sequence test-inputs)
-                         (list len input-dim)))
+                        (vt-from-sequence test-inputs)
+                        (list len input-dim)))
                (pred (model-forward model test-x))
                (true-y (mapcar fn test-inputs)))
           (format t "[~A] 推理对比:~%" name)
@@ -99,49 +92,9 @@
           (dotimes (i len)
             (format t "~F, "
                     (vt-ref pred i 0)))
-          (format t "~%")))
-      
+          (format t "~%")))      
       ;; 返回模型供后续检查
       model)))
-
-;;; ----------------------------------------------------------------
-;;; 3. 测试用例集 (一键运行，互不干扰)
-;;; ----------------------------------------------------------------
-(defun run-all-tests ()
-  ;; 测试 1: y = x^2 (原生 SGD)
-  (run-regression-test
-    (lambda (x) (* x x)) -3.0d0 3.0d0 1
-    '((16 :relu) (1 :none))
-    :opt-type :sgd
-    :opt-args '(:lr 0.01d0)
-    :name "X-Squared-SGD")
-
-  ;; 测试 2: y = sin(x) (换用 Adam，容易找到全局最优)
-  (run-regression-test
-    #'sin -3.14d0 3.14d0 1
-    '((32 :tanh) (16 :tanh) (1 :none))
-    :opt-type :adam
-    :opt-args '(:lr 0.02d0)
-    :test-inputs '(-3.14d0 -1.57d0 0.0d0 1.57d0 3.14d0)
-    :name "Sin-Adam")
-
-  ;; 测试 3: y = x^3 - 2x (更复杂的非线性)
-  (run-regression-test
-    (lambda (x) (- (* x x x) (* 2.0d0 x)))
-    -2.0d0 2.0d0 1
-    '((64 :relu) (32 :relu) (1 :none))
-    :opt-type :adamw
-    :opt-args '(:lr 0.01d0 :weight-decay 1e-4)
-    :name "Cubic-AdamW"))
-
-;; 执行入口
-;; (run-all-tests)
-
-
-;;;; ================================================================
-;;; 多架构极限压力测试
-;;; ================================================================
-(in-package #:nn)
 
 ;;; ----------------------------------------------------------------
 ;;; 测试 1: CNN 卷积网络 (验证 NCHW 空间维度推导)
@@ -155,11 +108,9 @@
          (target (vt-zeros (list batch-size 4 8 8)))
          ;; 模型: Conv(1->4, 3x3, padding=1) 保持尺寸不变
          (conv (make-conv2d 4 3 :padding 1 :name "conv1"))
-         (opt (make-adam :lr 0.01d0)))
-    
+         (opt (make-adam :lr 0.01d0)))    
     (build-model conv x)
     (format t "参数量: ~A~%" (param-count conv))
-    
     (dotimes (epoch 50)
       (zero-grad! conv)
       (let* ((out (forward conv x))
@@ -187,11 +138,9 @@
          ;; 输入: (batch, seq_len, input_size)
          (x (vt-random-normal (list batch-size seq-len input-size)))
          (lstm (make-lstm input-size hidden-size))
-         (opt (make-adam :lr 0.01d0)))
-    
+         (opt (make-adam :lr 0.01d0)))    
     (build-model lstm x)
     (format t "参数量: ~A~%" (param-count lstm))
-    
     (dotimes (epoch 50)
       (zero-grad! lstm)
       ;; LSTM forward 返回 3 个值，我们只取完整输出 output
@@ -223,14 +172,12 @@
          ;; 输入: (batch, seq_len, embed_dim)
          (x (vt-random-normal (list batch-size seq-len embed-dim)))
          (tb (make-transformer-block
-               embed-dim num-heads
-               :dropout-rate 0.0d0 ;; 测试时关闭 dropout
-               :eps 1e-5))
-         (opt (make-adam :lr 0.005d0)))
-    
+              embed-dim num-heads
+              :dropout-rate 0.0d0 ;; 测试时关闭 dropout
+              :eps 1e-5))
+         (opt (make-adam :lr 0.005d0)))    
     (build-model tb x)
     (format t "参数量: ~A~%" (param-count tb))
-    
     (dotimes (epoch 50)
       (zero-grad! tb)
       (let* ((out (forward tb x))
@@ -245,26 +192,8 @@
           (format t "Epoch ~2D | Loss: ~6F~%" epoch loss))))
     (format t "[Transformer] 3D转置、QKV切分与残差求导大成功!~%")))
 
-;;; ----------------------------------------------------------------
-;;; 一键执行所有架构测试
-;;; ----------------------------------------------------------------
-(defun run-all-architecture-tests ()
-  (format t "*********************************************~%")
-  (format t "** 启动全架构无死角压力测试...~%")
-  (format t "*********************************************~%")
-  (test-cnn-architecture)
-  (test-lstm-architecture)
-  (test-transformer-architecture)
-  (format t "~%*********************************************~%")
-  (format t "** 结果: 框架底座坚如磐石，全部通过! **~%")
-  (format t "*********************************************~%"))
-
-;; 执行入口:
-;; (run-all-architecture-tests)
-
-
 (defun test-gelu-residual-deep-net ()
-  (format t "~%=== [测试 2] GELU导数与深层残差网络 ===~%")
+  (format t "~%=== [测试 4] GELU导数与深层残差网络 ===~%")
   (let* ((x (vt-random-normal (list 8 32)))
          (block1 (make-dense 32 :activation :gelu))
          (res1 (make-residual block1))
@@ -277,30 +206,28 @@
     ;; 初始化
     (build-model (make-instance 'layer) x)
     (dolist (l layers) (build-model l x))
-    
     (dotimes (i 50)
       ;; 【修正】：手动遍历清零梯度
-      (dolist (l layers) (zero-grad! l))
-      
+      (dolist (l layers) (zero-grad! l))      
       (let ((out x))
-        (dolist (l layers) (setf out (forward l out))))
-        
-      (let* ((diff (vt-- out x))
-             (loss (coerce (vt-mean (vt-square diff)) 'double-float))
-             (grad (vt-scale diff (/ 2.0d0 (* 8 32)))))
-        ;; 【修正】：手动倒序链式反向传播
-        (dolist (l (reverse layers))
-          (setf grad (backward l grad)))
-        ;; 【修正】：手动遍历更新参数
-        (dolist (l layers) (model-update! l opt))
-        
-        (when (zerop (mod i 10))
-          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+        (dolist (l layers)
+	  (setf out (forward l out)))
+	(let* ((diff (vt-- out x))
+               (loss (coerce (vt-mean (vt-square diff)) 'double-float))
+               (grad (vt-scale diff (/ 2.0d0 (* 8 32)))))
+          ;; 【修正】：手动倒序链式反向传播
+          (dolist (l (reverse layers))
+            (setf grad (backward l grad)))
+          ;; 【修正】：手动遍历更新参数
+          (dolist (l layers)
+	    (model-update! l opt))          
+          (when (zerop (mod i 10))
+            (format t "Epoch ~2D | Loss: ~6F~%" i loss)))))
     (format t "[通过] GELU导数正确，深层残差梯度未消失!~%")))
 
 
 (defun test-lstm-seq2seq ()
-  (format t "~%=== [测试 3] LSTM 序列到序列求导 ===~%")
+  (format t "~%=== [测试 5] LSTM 序列到序列求导 ===~%")
   (let* ((batch 5) (seq-len 10) (feat 8)
          (hidden-dim 16)
          (x (vt-random-normal (list batch seq-len feat)))
@@ -313,9 +240,9 @@
     ;; 【修正】：用正确的 LSTM 输出形状来欺骗 proj 进行初始化
     ;; 这样 proj 才会生成 (16 -> 8) 的权重矩阵
     (build-model proj (vt-zeros (list batch seq-len hidden-dim)))
-    
     (dotimes (i 30)
-      (dolist (l layers) (zero-grad! l))
+      (dolist (l layers)
+	(zero-grad! l))
       (let* ((h (forward lstm x))
              (out (forward proj h))
              (loss (coerce (vt-mean (vt-square out)) 'double-float))
@@ -327,59 +254,54 @@
           (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
     (format t "[通过] LSTM 延迟初始化与序列反向传播正常!~%")))
 
-
-
 (defun test-nlp-basic-stack ()
-  (format t "~%=== [测试 4] NLP基础栈 ===~%")
+  (format t "~%=== [测试 6] NLP基础栈 ===~%")
   (let* ((batch 3)
          (seq-len 6)
          (dim 24)
          (vocab 100)
          ;; 模拟输入的 Token ID (整数张量)
-         (token-ids (make-array (list batch seq-len) 
-                                :element-type 'fixnum 
-                                :initial-contents '((1 5 9 20 3 45)
-                                                    (10 2 88 4 5 12)
-                                                    (33 21 5 67 8 90))))
+         (token-ids
+	   (vt-from-2d-array
+	    (make-array (list batch seq-len) 
+                        :element-type 'fixnum 
+                        :initial-contents '((1 5 9 20 3 45)
+                                            (10 2 88 4 5 12)
+                                            (33 21 5 67 8 90)))))
          (emb (make-embedding vocab dim))
          (ln (make-layer-norm dim))
          (mha (make-multi-head-attention dim 4 :use-bias nil))
          (layers (list emb ln mha))
-         (opt (make-adam :lr 0.01d0)))
-    
+         (opt (make-adam :lr 0.01d0)))    
     ;; 【修正1】：MHA 的 build-model 必须喂一个包含 3 个张量的 List！
     (let ((dummy (vt-zeros (list batch seq-len dim))))
       (build-model mha (list dummy dummy dummy)))
-    
     ;; 触发 embedding 初始化
-    (forward emb (vt-from-2d-array token-ids))
+    (forward emb token-ids)
     
     (dotimes (i 20)
       ;; 【修正2】：手动遍历清零，绝对不能传 List 进去
-      (dolist (l layers) (zero-grad! l))
+      (dolist (l layers)
+	(zero-grad! l))
       
-      (let* ((x (forward emb (vt-from-2d-array token-ids)))
+      (let* ((x (forward emb token-ids))
              (n (forward ln x))
              ;; 【修正3】：MHA 的 forward 也必须传 (list Q K V)！自注意力就是传3个一样的
              (attn-out (forward mha (list n n n)))
              (loss (coerce (vt-mean (vt-square attn-out)) 'double-float))
              (grad (vt-scale attn-out (/ 2.0d0 (* batch seq-len dim)))))
-        
         (setf grad (backward mha grad))
         (setf grad (backward ln grad))
-        (setf grad (backward emb grad)) 
-        
+        (setf grad (backward emb grad))        
         ;; 【修正4】：手动遍历更新，不能传 List
-        (dolist (l layers) (model-update! l opt))
-        
+        (dolist (l layers)
+	  (model-update! l opt))
         (when (zerop (mod i 10))
           (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
     (format t "[通过] Embedding查表、LayerNorm、MHA串联无阻!~%")))
 
-
-
 (defun test-1d-input-edge-case ()
-  (format t "~%=== [测试 5] 1D无Batch维度输入防御 ===~%")
+  (format t "~%=== [测试 7] 1D无Batch维度输入防御 ===~%")
   (let* ((x (vt-random-normal (list 16))) ;; 没有 batch 维度！纯向量
          (d (make-dense 8 :activation :sigmoid))
          (opt (make-adam :lr 0.1d0)))
@@ -399,7 +321,7 @@
 
 
 (defun test-dropout-switch ()
-  (format t "~%=== [测试 6] Dropout 训练/评估模式切换 ===~%")
+  (format t "~%=== [测试 8] Dropout 训练/评估模式切换 ===~%")
   (let* ((x (vt-ones (list 5 10))) ;; 全 1 矩阵
          (drop (make-dropout 0.5d0)))
     ;; 1. 训练模式：应该有大约一半的元素变成 0，且剩下的被放大了(除以0.5)
@@ -407,7 +329,6 @@
     (let ((out-train (forward drop x)))
       (format t "训练模式下是否有 0: ~A~%" 
               (not (vt-= (vt-relu (vt-- out-train 1.0d0)) out-train))))
-    
     ;; 2. 评估模式：输出必须与输入分毫不差
     (set-training! drop nil)
     (let ((out-eval (forward drop x)))
@@ -416,7 +337,7 @@
           (error "致命错误: Dropout 在 eval 模式下仍在丢掉数据!")))))
 
 (defun test-global-pooling-classifier ()
-  (format t "~%=== [测试 7] 全局池化 + 分类头 ===~%")
+  (format t "~%=== [测试 9] 全局池化 + 分类头 ===~%")
   (let* ((batch 4) (seq-len 8) (feat 32) (num-classes 5)
          ;; 模拟 RNN/CNN 输出的特征图
          (features (vt-random-normal (list batch seq-len feat)))
@@ -438,7 +359,7 @@
     (format t "[通过] 高维特征经全局池化后完美对接Dense层!~%")))
 
 (defun test-inception-branch-concat ()
-  (format t "~%=== [测试 8] 多分支并行计算与拼接 ===~%")
+  (format t "~%=== [测试 10] 多分支并行计算与拼接 ===~%")
   (let* ((x (vt-random-normal (list 3 16)))
          ;; 分支 1：降维到 8
          (branch1 (make-dense 8 :activation :relu))
@@ -447,10 +368,12 @@
          (layers (list branch1 branch2))
          (opt (make-adam :lr 0.01d0)))
     ;; 初始化
-    (dolist (l layers) (build-model l x))
+    (dolist (l layers)
+      (build-model l x))
     
     (dotimes (i 30)
-      (dolist (l layers) (zero-grad! l))
+      (dolist (l layers)
+	(zero-grad! l))
       ;; 并行前向传播
       (let* ((out1 (forward branch1 x))
              (out2 (forward branch2 x))
@@ -466,7 +389,8 @@
         (backward branch1 grad1)
         (backward branch2 grad2)
         ;; 并行更新
-        (dolist (l layers) (model-update! l opt))
+        (dolist (l layers)
+	  (model-update! l opt))
         (when (zerop (mod i 10))
           (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
     (format t "[通过] DAG多分支计算与Concat反向传播正确!~%")))
@@ -474,7 +398,7 @@
 
 
 (defun test-classification-loss ()
-  (format t "~%=== [测试 9] 真实分类交叉熵损失 ===~%")
+  (format t "~%=== [测试 11] 真实分类交叉熵损失 ===~%")
   (let* ((batch 10) (num-classes 3)
          (dummy-features (vt-random-normal (list batch 8)))
          (classifier (make-dense num-classes :activation :none))
@@ -482,7 +406,7 @@
          (opt (make-adam :lr 0.1d0))
          (targets (vt-from-sequence
 		   (make-array batch :element-type 'fixnum 
-                             :initial-contents '(0 2 1 0 1 2 2 0 1 0)))))
+				     :initial-contents '(0 2 1 0 1 2 2 0 1 0)))))
     
     (build-model classifier dummy-features)    
     (dotimes (i 30)
@@ -498,3 +422,49 @@
         (when (zerop (mod i 5))
           (format t "Epoch ~2D | CE-Loss: ~6F~%" i loss-val))))
     (format t "[通过] CrossEntropyLoss 完美融入自动求导系统!~%")))
+
+
+
+
+
+(defun run-all-tests ()
+  ;; 测试 a: y = x^2 (原生 SGD)
+  (run-regression-test
+   (lambda (x) (* x x)) -3.0d0 3.0d0 1
+   '((16 :relu) (1 :none))
+   :opt-type :sgd
+   :opt-args '(:lr 0.01d0)
+   :name "X-Squared-SGD")
+
+  ;; 测试 b: y = sin(x) (换用 Adam，容易找到全局最优)
+  (run-regression-test
+   #'sin -3.14d0 3.14d0 1
+   '((32 :tanh) (16 :tanh) (1 :none))
+   :opt-type :adam
+   :opt-args '(:lr 0.02d0)
+   :test-inputs '(-3.14d0 -1.57d0 0.0d0 1.57d0 3.14d0)
+   :name "Sin-Adam")
+
+  ;; 测试 c: y = x^3 - 2x (更复杂的非线性)
+  (run-regression-test
+   (lambda (x) (- (* x x x) (* 2.0d0 x)))
+   -2.0d0 2.0d0 1
+   '((64 :relu) (32 :relu) (1 :none))
+   :opt-type :adamw
+   :opt-args '(:lr 0.01d0 :weight-decay 1e-4)
+   :name "Cubic-AdamW")
+  
+  (format t "** 启动全架构无死角压力测试...~%")
+  (test-cnn-architecture)
+  (test-lstm-architecture)
+  (test-transformer-architecture)
+  (format t "** 结果: 框架底座坚如磐石，全部通过! **~%")
+  
+  (test-gelu-residual-deep-net)
+  (test-lstm-seq2seq)
+  (test-nlp-basic-stack)
+  (test-1d-input-edge-case)
+  (test-dropout-switch)
+  (test-global-pooling-classifier)
+  (test-inception-branch-concat)
+  (test-classification-loss))
