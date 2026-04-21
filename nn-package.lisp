@@ -13,7 +13,8 @@
        :vt-transpose :vt-reshape :vt-squeeze :vt-split
        :vt-copy :vt-contiguous
        :vt-ref :vt-slice :vt-do-each :vt-map :vt-reduce
-   :vt-+ :vt-- :vt-* :vt-/ :vt-scale
+       :vt-amax
+   :vt-+ :vt-- :vt-* :vt-/ :vt-scale :vt-=
        :vt-matmul :vt-einsum :vt-dot :vt-outer
        :vt-sum :vt-mean :vt-std :vt-var
        :vt-amax :vt-amin :vt-argmax :vt-argmin
@@ -26,7 +27,6 @@
        :vt-clip :vt-concatenate :vt-norm
    :vt-mean-squared-error :vt-binary-cross-entropy
    :vt-cross-entropy
-       :vt-+ :vt-- :vt-* :vt-/
        :vt-to-2d-array :vt-from-2d-array
        :vt-flatten-sequence :vt-from-sequence :vt-data->list
    :vt-inv :vt-det :vt-solve :vt-trace

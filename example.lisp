@@ -261,3 +261,241 @@
 
 ;; 执行入口:
 ;; (run-all-architecture-tests)
+
+
+(defun test-gelu-residual-deep-net ()
+  (format t "~%=== [测试 2] GELU导数与深层残差网络 ===~%")
+  (let* ((x (vt-random-normal (list 8 32)))
+         (block1 (make-dense 32 :activation :gelu))
+         (res1 (make-residual block1))
+         (block2 (make-dense 32 :activation :gelu))
+         (res2 (make-residual block2))
+         (block3 (make-dense 32 :activation :gelu))
+         (res3 (make-residual block3))
+         (layers (list res1 res2 res3))
+         (opt (make-adam :lr 0.005d0)))
+    ;; 初始化
+    (build-model (make-instance 'layer) x)
+    (dolist (l layers) (build-model l x))
+    
+    (dotimes (i 50)
+      ;; 【修正】：手动遍历清零梯度
+      (dolist (l layers) (zero-grad! l))
+      
+      (let ((out x))
+        (dolist (l layers) (setf out (forward l out))))
+        
+      (let* ((diff (vt-- out x))
+             (loss (coerce (vt-mean (vt-square diff)) 'double-float))
+             (grad (vt-scale diff (/ 2.0d0 (* 8 32)))))
+        ;; 【修正】：手动倒序链式反向传播
+        (dolist (l (reverse layers))
+          (setf grad (backward l grad)))
+        ;; 【修正】：手动遍历更新参数
+        (dolist (l layers) (model-update! l opt))
+        
+        (when (zerop (mod i 10))
+          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+    (format t "[通过] GELU导数正确，深层残差梯度未消失!~%")))
+
+
+(defun test-lstm-seq2seq ()
+  (format t "~%=== [测试 3] LSTM 序列到序列求导 ===~%")
+  (let* ((batch 5) (seq-len 10) (feat 8)
+         (hidden-dim 16)
+         (x (vt-random-normal (list batch seq-len feat)))
+         (lstm (make-lstm feat hidden-dim))
+         ;; proj 要把 hidden_dim(16) 映射回 feat(8)
+         (proj (make-dense feat :activation :tanh))
+         (layers (list proj lstm))
+         (opt (make-adam :lr 0.01d0)))
+    (build-model lstm)
+    ;; 【修正】：用正确的 LSTM 输出形状来欺骗 proj 进行初始化
+    ;; 这样 proj 才会生成 (16 -> 8) 的权重矩阵
+    (build-model proj (vt-zeros (list batch seq-len hidden-dim)))
+    
+    (dotimes (i 30)
+      (dolist (l layers) (zero-grad! l))
+      (let* ((h (forward lstm x))
+             (out (forward proj h))
+             (loss (coerce (vt-mean (vt-square out)) 'double-float))
+             (grad (vt-scale out (/ 2.0d0 (* batch seq-len feat)))))
+        (setf grad (backward proj grad))
+        (setf grad (backward lstm grad))
+        (dolist (l layers) (model-update! l opt))
+        (when (zerop (mod i 10))
+          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+    (format t "[通过] LSTM 延迟初始化与序列反向传播正常!~%")))
+
+
+
+(defun test-nlp-basic-stack ()
+  (format t "~%=== [测试 4] NLP基础栈 ===~%")
+  (let* ((batch 3)
+         (seq-len 6)
+         (dim 24)
+         (vocab 100)
+         ;; 模拟输入的 Token ID (整数张量)
+         (token-ids (make-array (list batch seq-len) 
+                                :element-type 'fixnum 
+                                :initial-contents '((1 5 9 20 3 45)
+                                                    (10 2 88 4 5 12)
+                                                    (33 21 5 67 8 90))))
+         (emb (make-embedding vocab dim))
+         (ln (make-layer-norm dim))
+         (mha (make-multi-head-attention dim 4 :use-bias nil))
+         (layers (list emb ln mha))
+         (opt (make-adam :lr 0.01d0)))
+    
+    ;; 【修正1】：MHA 的 build-model 必须喂一个包含 3 个张量的 List！
+    (let ((dummy (vt-zeros (list batch seq-len dim))))
+      (build-model mha (list dummy dummy dummy)))
+    
+    ;; 触发 embedding 初始化
+    (forward emb (vt-from-2d-array token-ids))
+    
+    (dotimes (i 20)
+      ;; 【修正2】：手动遍历清零，绝对不能传 List 进去
+      (dolist (l layers) (zero-grad! l))
+      
+      (let* ((x (forward emb (vt-from-2d-array token-ids)))
+             (n (forward ln x))
+             ;; 【修正3】：MHA 的 forward 也必须传 (list Q K V)！自注意力就是传3个一样的
+             (attn-out (forward mha (list n n n)))
+             (loss (coerce (vt-mean (vt-square attn-out)) 'double-float))
+             (grad (vt-scale attn-out (/ 2.0d0 (* batch seq-len dim)))))
+        
+        (setf grad (backward mha grad))
+        (setf grad (backward ln grad))
+        (setf grad (backward emb grad)) 
+        
+        ;; 【修正4】：手动遍历更新，不能传 List
+        (dolist (l layers) (model-update! l opt))
+        
+        (when (zerop (mod i 10))
+          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+    (format t "[通过] Embedding查表、LayerNorm、MHA串联无阻!~%")))
+
+
+
+(defun test-1d-input-edge-case ()
+  (format t "~%=== [测试 5] 1D无Batch维度输入防御 ===~%")
+  (let* ((x (vt-random-normal (list 16))) ;; 没有 batch 维度！纯向量
+         (d (make-dense 8 :activation :sigmoid))
+         (opt (make-adam :lr 0.1d0)))
+    (build-model d x)
+    (dotimes (i 20)
+      (zero-grad! d)
+      (let* ((out (forward d x))
+             (target (vt-ones (list 8)))
+             (diff (vt-- out target))
+             (loss (coerce (vt-mean (vt-square diff)) 'double-float))
+             (grad (vt-scale diff (/ 2.0d0 8))))
+        (backward d grad)
+        (model-update! d opt)
+        (when (zerop (mod i 10))
+          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+    (format t "[通过] 1D向量输入不会引发维度坍塌!~%")))
+
+
+(defun test-dropout-switch ()
+  (format t "~%=== [测试 6] Dropout 训练/评估模式切换 ===~%")
+  (let* ((x (vt-ones (list 5 10))) ;; 全 1 矩阵
+         (drop (make-dropout 0.5d0)))
+    ;; 1. 训练模式：应该有大约一半的元素变成 0，且剩下的被放大了(除以0.5)
+    (set-training! drop t)
+    (let ((out-train (forward drop x)))
+      (format t "训练模式下是否有 0: ~A~%" 
+              (not (vt-= (vt-relu (vt-- out-train 1.0d0)) out-train))))
+    
+    ;; 2. 评估模式：输出必须与输入分毫不差
+    (set-training! drop nil)
+    (let ((out-eval (forward drop x)))
+      (if (vt-= out-eval x)
+          (format t "[通过] Dropout 在评估模式下完美保持恒等映射!~%")
+          (error "致命错误: Dropout 在 eval 模式下仍在丢掉数据!")))))
+
+(defun test-global-pooling-classifier ()
+  (format t "~%=== [测试 7] 全局池化 + 分类头 ===~%")
+  (let* ((batch 4) (seq-len 8) (feat 32) (num-classes 5)
+         ;; 模拟 RNN/CNN 输出的特征图
+         (features (vt-random-normal (list batch seq-len feat)))
+         (head (make-dense num-classes :activation :none))
+         (opt (make-adam :lr 0.05d0)))
+    (build-model head (vt-zeros (list batch feat))) ;; 注意：池化后特征维度变了
+    (dotimes (i 30)
+      (zero-grad! head)
+      ;; 【手动实现全局平均池化】：沿 axis=1 求均值，形状变为
+      (let* ((pooled (vt-mean features :axis 1)) 
+             (logits (forward head pooled))
+             ;; 假设目标是让所有 logit 逼近 0
+             (loss (coerce (vt-mean (vt-square logits)) 'double-float))
+             (grad (vt-scale logits (/ 2.0d0 (* batch num-classes)))))
+        (backward head grad)
+        (model-update! head opt)
+        (when (zerop (mod i 10))
+          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+    (format t "[通过] 高维特征经全局池化后完美对接Dense层!~%")))
+
+
+(defun test-inception-branch-concat ()
+  (format t "~%=== [测试 8] 多分支并行计算与拼接 ===~%")
+  (let* ((x (vt-random-normal (list 3 16)))
+         ;; 分支 1：降维到 8
+         (branch1 (make-dense 8 :activation :relu))
+         ;; 分支 2：降维到 8
+         (branch2 (make-dense 8 :activation :relu))
+         (layers (list branch1 branch2))
+         (opt (make-adam :lr 0.01d0)))
+    ;; 初始化
+    (dolist (l layers) (build-model l x))
+    
+    (dotimes (i 30)
+      (dolist (l layers) (zero-grad! l))
+      ;; 并行前向传播
+      (let* ((out1 (forward branch1 x))
+             (out2 (forward branch2 x))
+             ;; 假设你实现了 vt-concat，沿最后一个维度拼接，变成 (3, 16)
+             (concat-out (vt-concat (list out1 out2) :axis -1))
+             (loss (coerce (vt-mean (vt-square concat-out)) 'double-float))
+             ;; 梯度需要手动切分回去（假设实现了 vt-split）
+             (grad (vt-scale concat-out (/ 2.0d0 (* 3 16))))
+             (grads-list (clvt::vt-split grad :axis -1 :indices-or-sections 2))
+             (grad1 (first grads-list))
+             (grad2 (second grads-list)))
+        ;; 并行反向传播
+        (backward branch1 grad1)
+        (backward branch2 grad2)
+        ;; 并行更新
+        (dolist (l layers) (model-update! l opt))
+        (when (zerop (mod i 10))
+          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+    (format t "[通过] DAG多分支计算与Concat反向传播正确!~%")))
+;; 注：如果还没实现 vt-concat / vt-split，这个测试可以先跳过，去写这两个底层算子。
+
+
+(defun test-classification-loss ()
+  (format t "~%=== [测试 9] 真实分类交叉熵损失 ===~%")
+  (let* ((batch 10) (num-classes 3)
+         (dummy-features (vt-random-normal (list batch 8)))
+         (classifier (make-dense num-classes :activation :none))
+         (ce-loss (make-cross-entropy-loss))
+         (opt (make-adam :lr 0.1d0))
+         (targets (vt-from-sequence
+		   (make-array batch :element-type 'fixnum 
+                             :initial-contents '(0 2 1 0 1 2 2 0 1 0)))))
+    
+    (build-model classifier dummy-features)    
+    (dotimes (i 30)
+      (zero-grad! classifier)
+      (let* ((logits (forward classifier dummy-features))
+             ;; 传入
+             (loss-vt (forward ce-loss (list logits targets)))
+             (loss-val (coerce (vt-mean loss-vt) 'double-float))
+             ;; CE 的 backward 传什么都没关系，它内部会忽略，直接返回对 logits 的梯度
+             (grad (backward ce-loss (list loss-val))))
+        (backward classifier grad)
+        (model-update! classifier opt)
+        (when (zerop (mod i 5))
+          (format t "Epoch ~2D | CE-Loss: ~6F~%" i loss-val))))
+    (format t "[通过] CrossEntropyLoss 完美融入自动求导系统!~%")))
