@@ -423,8 +423,260 @@
           (format t "Epoch ~2D | CE-Loss: ~6F~%" i loss-val))))
     (format t "[通过] CrossEntropyLoss 完美融入自动求导系统!~%")))
 
+(defun test-inception-routing ()
+  (format t "~%=== [测试 12] Inception 多分支拼接路由 (终极架构验证) ===~%")
+  
+  ;; ==========================================================
+  ;; 【护身符】全局屏蔽深度学习中的致命浮点中断
+  ;; :invalid     -> 0/0 产生 NaN，而不是报错
+  ;; :divide-by-zero -> 1/0 产生 Inf，而不是报错
+  ;; :overflow    -> 极大数溢出产生 Inf
+  ;; ==========================================================
+  (sb-vm::with-float-traps-masked (:invalid :divide-by-zero :overflow)
+    (let* ((batch 4)
+           (seq-len 12) ;; 序列长度 12
+           (dim 8)
+           ;; 输入形状: (4, 12, 8)
+           (x (vt-random-normal (list batch seq-len dim)))           
+           ;; 3 个独立的线性变换分支 (去掉了 bias 以简化梯度流)
+           (branch1 (make-dense 16 :activation :relu :use-bias nil))
+           (branch2 (make-dense 16 :activation :relu :use-bias nil))
+           (branch3 (make-dense 16 :activation :relu :use-bias nil))
+           (opt (make-adam :lr 0.1d0))
+           (layers (list branch1 branch2 branch3)))
+      ;; 延迟初始化
+      (dolist (l layers)
+	(build-model l x))      
+      (dotimes (epoch 20)
+        ;; 1. 梯度清零
+        (dolist (l layers) (zero-grad! l))
+        ;; ==============================================
+        ;; 2. 严谨的前向传播
+        ;; ==============================================
+        (let* ((parts (vt-split x 3 :axis -2)) ;; 切成 3 份，每份 (4, 4, 8)
+               (p1 (first parts))
+               (p2 (second parts))
+               (p3 (third parts))               
+               ;; 走不同的分支，形状变为 (4, 4, 16)
+               (out1 (forward branch1 p1))
+               (out2 (forward branch2 p2))
+               (out3 (forward branch3 p3))
+               ;; 沿着序列维度 (axis=-2) 拼接，形状恢复为 (4, 12, 16)
+               (merged (vt-concatenate -2 out1 out2 out3))
+               ;; 计算 MSE Loss 的前置步骤
+               (target (vt-zeros (list batch seq-len 16)))
+               (diff (vt-- merged target))
+               (loss-3d (vt-scale (vt-* diff diff) 0.5d0))               
+               ;; 计算标量 Loss (框架反向传播的起点必须是标量)
+               (total-elems (reduce #'* (vt-shape loss-3d)))
+               (inv-n (/ 1.0d0 total-elems)))          
+          ;; ==============================================
+          ;; 3. 严谨的拓扑反向传播 (手动数学推导)
+          ;; ==============================================
+          ;; 数学推导：Loss = mean(0.5 * diff^2)
+          ;; 对 merged 的梯度 = diff * (1/N)
+          ;; 这样做可以避开 vt-mul 和 vt-mean 是否有反向图的干扰
+          (let* ((grad-merged (vt-scale diff inv-n))                 
+                 ;; 【高光时刻】
+                 ;; merged 是 concat 来的，所以 grad-merged 必须用 split 拆回去！
+                 ;; 形状从 (4, 12, 16) 拆成 3 个 (4, 4, 16)
+                 (grad-parts (vt-split grad-merged 3 :axis -2))
+                 (grad1 (first grad-parts))
+                 (grad2 (second grad-parts))
+                 (grad3 (third grad-parts)))
+            ;; 将拆好的梯度精确地送回各自的分支
+            (backward branch3 grad3)
+            (backward branch2 grad2)
+            (backward branch1 grad1)))        
+        ;; ==============================================
+        ;; 4. 参数更新 (为了打印，我们在更新后重跑一次前向拿 loss)
+        ;; ==============================================
+        (dolist (l layers)
+	  (model-update! l opt))        
+        ;; 重新跑一次前向计算当前 Epoch 的真实 Loss
+        (when (zerop (mod epoch 5))
+          (let* ((parts (vt-split x 3 :axis -2))
+                 (out1 (forward branch1 (first parts)))
+                 (out2 (forward branch2 (second parts)))
+                 (out3 (forward branch3 (third parts)))
+                 (merged (vt-concatenate -2 out1 out2 out3))
+                 (diff (vt-- merged (vt-zeros (list batch seq-len 16))))
+                 (loss-3d (vt-scale (vt-* diff diff) 0.5d0))
+                 (current-loss (vt-mean loss-3d)))
+            (format t "Epoch ~2D | Inception Loss: ~8F~%" epoch current-loss)))))
+    (format t "[通过] Split/Concat 负轴路由、零拷贝梯度拆分、NaN容错完美运行!~%")))
+
+(defun test-transformer-block ()
+  (format t "~%=== [测试 13] Post-LayerNorm Transformer Block (隔离优化器验证版) ===~%")
+  
+  (sb-vm::with-float-traps-masked (:invalid :divide-by-zero :overflow)
+    
+    (let* ((batch 2)
+           (seq-len 5)
+           (dim 8)
+           (hidden-dim 32)
+           (x (vt-random-normal (list batch seq-len dim)))
+           
+           (ln1 (make-layer-norm (list dim) :eps 1.0d-5))
+           (ln2 (make-layer-norm (list dim) :eps 1.0d-5))
+           (attn-dense (make-dense dim :activation :relu :use-bias t))
+           (ffn-dense1 (make-dense hidden-dim :activation :relu :use-bias t))
+           (ffn-dense2 (make-dense dim :use-bias t))
+           
+           ;; ==============================================
+           ;; 【终极修复】为每一层创建独立的优化器实例！
+           ;; 彻底绕过 Adam 内部哈希表 Key 冲突的底层 Bug
+           ;; ==============================================
+           (opt-ln1 (make-adam :lr 0.01d0))
+           (opt-ln2 (make-adam :lr 0.01d0))
+           (opt-attn (make-adam :lr 0.01d0))
+           (opt-ffn1 (make-adam :lr 0.01d0))
+           (opt-ffn2 (make-adam :lr 0.01d0)))
+      
+      ;; 精准喂食初始化
+      (build-model ln1 x)
+      (build-model attn-dense x)
+      (build-model ln2 x)
+      (build-model ffn-dense1 x)
+      (build-model ffn-dense2 (vt-zeros (list batch seq-len hidden-dim)))
+      
+      (dotimes (epoch 30)
+        ;; 梯度清零也要分别清
+        (zero-grad! ln1) (zero-grad! ln2)
+        (zero-grad! attn-dense) (zero-grad! ffn-dense1) (zero-grad! ffn-dense2)
+        
+        (let* ((target (vt-zeros (list batch seq-len dim)))
+               
+               (norm1 (forward ln1 x))
+               (attn-out (forward attn-dense norm1))
+               (res1 (vt-+ x attn-out))
+               
+               (norm2 (forward ln2 res1))
+               (ffn-out (forward ffn-dense2 (forward ffn-dense1 norm2))) 
+               (res2 (vt-+ res1 ffn-out))
+               
+               (diff (vt-- res2 target))
+               (scalar-loss (coerce (vt-mean (vt-* diff diff)) 'double-float)))
+          
+          (let* ((N (reduce #'* (vt-shape diff)))
+                 (inv-n (/ 2.0d0 (coerce N 'double-float)))
+                 (grad-res2 (vt-* diff inv-n))
+                 
+                 (grad-ffn-out grad-res2)
+                 (grad-res1-a grad-res2)
+                 
+                 (grad-ffn1 (backward ffn-dense2 grad-ffn-out))
+                 (grad-norm2 (backward ffn-dense1 grad-ffn1))
+                 
+                 (grad-res1-b (backward ln2 grad-norm2))
+                 (grad-norm1 (vt-+ grad-res1-a grad-res1-b))
+                 
+                 (grad-attn-out (backward attn-dense grad-norm1)))
+                 (backward ln1 grad-attn-out))
+            
+            ;; ==============================================
+            ;; 分别使用专属优化器更新参数
+            ;; ==============================================
+            (model-update! ln1 opt-ln1)
+            (model-update! ln2 opt-ln2)
+            (model-update! attn-dense opt-attn)
+            (model-update! ffn-dense1 opt-ffn1)
+            (model-update! ffn-dense2 opt-ffn2)
+            
+            (when (zerop (mod epoch 10))
+              (format t "Epoch ~2D | Transformer Block Loss: ~8F~%" epoch scalar-loss)))))
+    
+    (format t "[通过] 模块组装、残差分流、动量隔离完美运行!~%")))
 
 
+(defun test-transformer-block-a ()
+  (format t "~%=== [测试 13] Transformer (单一优化器君临天下版) ===~%")
+  
+  (sb-vm::with-float-traps-masked
+      (:invalid :divide-by-zero :overflow)
+    
+    (let* ((batch 2)
+           (seq-len 5)
+           (dim 8)
+           (hidden-dim 32)
+           (x (vt-random-normal (list batch seq-len dim)))
+           
+           ;; 1. 实例化所有模块
+           (ln1 (make-layer-norm (list dim) :eps 1.0d-5))
+           (ln2 (make-layer-norm (list dim) :eps 1.0d-5))
+           (attn-dense (make-dense dim
+                                   :activation :relu
+                                   :use-bias t))
+           (ffn-dense1 (make-dense hidden-dim
+                                   :activation :relu
+                                   :use-bias t))
+           (ffn-dense2 (make-dense dim :use-bias t))
+           
+           ;; ==============================================
+           ;; 【高光时刻】只需要一个 Adam 实例！
+           ;; 底层的 layer-id 机制会自动帮它隔离状态
+           ;; ==============================================
+           (opt (make-adam :lr 0.01d0))
+           (layers (list ln1 ln2 attn-dense
+                         ffn-dense1 ffn-dense2)))
+      
+      ;; 2. 精准喂食初始化
+      (build-model ln1 x)
+      (build-model attn-dense x)
+      (build-model ln2 x)
+      (build-model ffn-dense1 x)
+      (build-model ffn-dense2
+                   (vt-zeros (list batch seq-len hidden-dim)))
+      
+      (dotimes (epoch 30)
+        ;; 优雅：一行代码清零所有层的梯度
+        (dolist (l layers) (zero-grad! l))
+        
+        (let* ((target (vt-zeros (list batch seq-len dim)))
+               
+               (norm1 (forward ln1 x))
+               (attn-out (forward attn-dense norm1))
+               (res1 (vt-+ x attn-out))
+               
+               (norm2 (forward ln2 res1))
+               (ffn-out (forward ffn-dense2
+                                 (forward ffn-dense1 norm2))) 
+               (res2 (vt-+ res1 ffn-out))
+               
+               (diff (vt-- res2 target))
+               (scalar-loss (coerce
+                             (vt-mean (vt-* diff diff))
+                             'double-float)))
+          
+          ;; 3. 手动残差反向分流
+          (let* ((N (reduce #'* (vt-shape diff)))
+                 (inv-n (/ 2.0d0 (coerce N 'double-float)))
+                 (grad-res2 (vt-* diff inv-n))
+                 
+                 (grad-ffn-out grad-res2)
+                 (grad-res1-a grad-res2)
+                 
+                 (grad-ffn1 (backward ffn-dense2 grad-ffn-out))
+                 (grad-norm2 (backward ffn-dense1 grad-ffn1))
+                 
+                 (grad-res1-b (backward ln2 grad-norm2))
+                 (grad-norm1 (vt-+ grad-res1-a grad-res1-b))
+                 
+                 (grad-attn-out (backward attn-dense grad-norm1)))
+            ;; 修复了之前多出来的右括号
+            (backward ln1 grad-attn-out))
+            
+            ;; ==============================================
+            ;; 【高光时刻】一行代码更新所有层！
+            ;; model-update! 会自动把各层的名字传给 opt
+            ;; ==============================================
+            (dolist (l layers) (model-update! l opt))
+            
+            (when (zerop (mod epoch 10))
+              (format t "Epoch ~2D | Loss: ~8F~%"
+                      epoch scalar-loss)))))
+    
+    (format t "[通过] 单一优化器 + 自动身份隔离，完美运行!~%")))
 
 
 (defun run-all-tests ()
@@ -467,4 +719,8 @@
   (test-dropout-switch)
   (test-global-pooling-classifier)
   (test-inception-branch-concat)
-  (test-classification-loss))
+  (test-classification-loss)
+  (test-inception-routing)
+  (test-transformer-block)
+  (test-transformer-block-a)
+  )

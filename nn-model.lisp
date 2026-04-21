@@ -82,7 +82,7 @@
   "使用优化器更新模型参数."
   (let ((param-list (params model))
         (grad-list (grads model)))
-    (optimizer-step optimizer param-list grad-list)))
+    (optimizer-step optimizer model param-list grad-list)))
 
 (defun collect-all-layers (component)
   "递归收集所有子层."
