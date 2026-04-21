@@ -437,7 +437,6 @@
           (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
     (format t "[通过] 高维特征经全局池化后完美对接Dense层!~%")))
 
-
 (defun test-inception-branch-concat ()
   (format t "~%=== [测试 8] 多分支并行计算与拼接 ===~%")
   (let* ((x (vt-random-normal (list 3 16)))
@@ -456,11 +455,11 @@
       (let* ((out1 (forward branch1 x))
              (out2 (forward branch2 x))
              ;; 假设你实现了 vt-concat，沿最后一个维度拼接，变成 (3, 16)
-             (concat-out (vt-concat (list out1 out2) :axis -1))
+             (concat-out (vt-concatenate -1 out1 out2))
              (loss (coerce (vt-mean (vt-square concat-out)) 'double-float))
              ;; 梯度需要手动切分回去（假设实现了 vt-split）
              (grad (vt-scale concat-out (/ 2.0d0 (* 3 16))))
-             (grads-list (clvt::vt-split grad :axis -1 :indices-or-sections 2))
+             (grads-list (vt-split grad 2 :axis -1))
              (grad1 (first grads-list))
              (grad2 (second grads-list)))
         ;; 并行反向传播
