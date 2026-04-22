@@ -56,7 +56,8 @@
 
 (defgeneric update! (component optimizer)
   (:documentation "使用优化器更新参数.")
-  (:method ((c t) optimizer) (declare (ignore optimizer))))
+  (:method ((c t) optimizer)
+    (declare (ignore optimizer))))
 
 
 (defclass loss ()

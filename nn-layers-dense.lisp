@@ -218,9 +218,8 @@
     (if (or (> rank 2)
             (not (and (= rank 2)
                       (= (second in-shape) in-dim))))
-        (vt-reshape a
-                    (append (butlast in-shape)
-                            (list (dense-out-dim l))))
+        (vt-reshape a (append (butlast in-shape)
+                              (list (dense-out-dim l))))
         a)))
 
 (defmethod backward ((l dense) grad-output)
@@ -422,7 +421,10 @@
          (post-dim (reduce #'* (subseq shape start))))
     (vt-reshape
      input
-     (list (if (> start 0) pre-dim 1) post-dim))))
+     (list (if (> start 0)
+	       pre-dim
+	       1)
+	   post-dim))))
 
 (defclass residual (layer)
   ((block :initarg :block
@@ -443,7 +445,9 @@
 (defmethod backward ((l residual) grad-output)
   (let ((grad-block
           (backward (residual-block l) grad-output)))
-    (vt-+ grad-output grad-block)))
+    (vt-+ grad-output
+	  (or grad-block
+	      (vt-zeros (vt-shape grad-output))))))
 
 (defmethod params ((l residual))
   (params (residual-block l)))

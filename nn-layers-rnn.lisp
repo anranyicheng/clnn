@@ -282,23 +282,20 @@
              (df (vt-* dc (vt-* c-prev f-gate
                                 (vt-- 1.0d0 f-gate))))
              (dg (vt-* dc (vt-* i-gate
-                                (vt-- 1.0d0
-                                      (vt-* g-gate g-gate)))))
+                                (vt-- 1.0d0 (vt-* g-gate g-gate)))))
              (do-g (vt-* dh tanh-c
                          (vt-* o-gate (vt-- 1.0d0 o-gate))))
-             (d-gates (vt-concatenate -1
-				      di df dg do-g)))
+             (d-gates (vt-concatenate -1 di df dg do-g)))
+        ;; 时间步内累加
         (setf dwih-acc
               (vt-+ dwih-acc
-                    (vt-matmul
-                     (vt-transpose d-gates) x-t)))
+                    (vt-matmul (vt-transpose d-gates) x-t)))
         (let ((h-prev (if (= idx 0)
                           zero-h
                           (nth (1- idx) all-h))))
           (setf dwhh-acc
                 (vt-+ dwhh-acc
-                      (vt-matmul
-                       (vt-transpose d-gates) h-prev))))
+                      (vt-matmul (vt-transpose d-gates) h-prev))))
         (setf dbih-acc
               (vt-+ dbih-acc (vt-sum d-gates :axis 0)))
         (setf dbhh-acc
@@ -307,10 +304,22 @@
         (setf (vt-slice grad-input :all idx :all)
               (vt-matmul d-gates wih))
         (setf dc-next (vt-* dc f-gate))))
-    (setf (lstm-dweight-ih l) dwih-acc)
-    (setf (lstm-dweight-hh l) dwhh-acc)
-    (setf (lstm-dbias-ih l) dbih-acc)
-    (setf (lstm-dbias-hh l) dbhh-acc)
+    (setf (lstm-dweight-ih l)
+          (vt-+ (or (lstm-dweight-ih l)
+                    (vt-zeros (vt-shape dwih-acc)))
+                dwih-acc))
+    (setf (lstm-dweight-hh l)
+          (vt-+ (or (lstm-dweight-hh l)
+                    (vt-zeros (vt-shape dwhh-acc)))
+                dwhh-acc))
+    (setf (lstm-dbias-ih l)
+          (vt-+ (or (lstm-dbias-ih l)
+                    (vt-zeros (vt-shape dbih-acc)))
+                dbih-acc))
+    (setf (lstm-dbias-hh l)
+          (vt-+ (or (lstm-dbias-hh l)
+                    (vt-zeros (vt-shape dbhh-acc)))
+                dbhh-acc))
     grad-input))
 
 (defmethod params ((l lstm))
@@ -462,10 +471,8 @@
          (is (gru-input-size l))
          (wih (gru-weight-ih l))
          (whh (gru-weight-hh l))
-         (w-in (vt-slice wih
-                         :all `(,(* 2 hs) ,(* 3 hs))))
-         (w-hn (vt-slice whh
-                         :all `(,(* 2 hs) ,(* 3 hs))))
+         (w-in (vt-slice wih :all `(,(* 2 hs) ,(* 3 hs))))
+         (w-hn (vt-slice whh :all `(,(* 2 hs) ,(* 3 hs))))
          (dwih-acc (vt-zeros (list (* 3 hs) is)))
          (dwhh-acc (vt-zeros (list (* 3 hs) hs)))
          (dbih-acc (vt-zeros (list (* 3 hs))))
@@ -487,48 +494,33 @@
                        dh-next))
              (dz (vt-* dh (vt-- h-prev n-t)))
              (dn (vt-* dh (vt-- 1.0d0 z-t)))
-             (dz-pre
-               (vt-* dz
-                     (vt-* z-t (vt-- 1.0d0 z-t))))
-             (dn-pre
-               (vt-* dn
-                     (vt-- 1.0d0 (vt-* n-t n-t))))
+             (dz-pre (vt-* dz (vt-* z-t (vt-- 1.0d0 z-t))))
+             (dn-pre (vt-* dn
+                           (vt-- 1.0d0 (vt-* n-t n-t))))
              (dr (vt-* dn-pre hn-t))
              (dhn-linear (vt-* dn-pre r-t))
-             (dr-pre
-               (vt-* dr
-                     (vt-* r-t (vt-- 1.0d0 r-t))))
-             (d-gates-rz
-               (vt-concatenate -1 dr-pre dz-pre)))
+             (dr-pre (vt-* dr (vt-* r-t
+                                    (vt-- 1.0d0 r-t))))
+             (d-gates-rz (vt-concatenate -1
+                                         dr-pre dz-pre)))
         ;; 1. Wih
-        (let ((full-dw
-                (vt-zeros (list (* 3 hs) is))))
+        (let ((full-dw (vt-zeros (list (* 3 hs) is))))
+          (setf (vt-slice full-dw :all `(0 ,(* 2 hs)) :all)
+                (vt-matmul (vt-transpose d-gates-rz) x-t))
           (setf (vt-slice full-dw
-                          :all `(0 ,(* 2 hs)) :all)
-                (vt-matmul
-                 (vt-transpose d-gates-rz) x-t))
-          (setf (vt-slice full-dw
-                          :all `(,(* 2 hs) ,(* 3 hs))
-                          :all)
-                (vt-matmul
-                 (vt-transpose dn-pre) x-t))
+                          :all `(,(* 2 hs) ,(* 3 hs)) :all)
+                (vt-matmul (vt-transpose dn-pre) x-t))
           (setf dwih-acc (vt-+ dwih-acc full-dw)))
         ;; 2. Whh
-        (let ((full-dwh
-                (vt-zeros (list (* 3 hs) hs))))
+        (let ((full-dwh (vt-zeros (list (* 3 hs) hs))))
+          (setf (vt-slice full-dwh :all `(0 ,(* 2 hs)) :all)
+                (vt-matmul (vt-transpose d-gates-rz) h-prev))
           (setf (vt-slice full-dwh
-                          :all `(0 ,(* 2 hs)) :all)
-                (vt-matmul
-                 (vt-transpose d-gates-rz) h-prev))
-          (setf (vt-slice full-dwh
-                          :all `(,(* 2 hs) ,(* 3 hs))
-                          :all)
-                (vt-matmul
-                 (vt-transpose dhn-linear) h-prev))
+                          :all `(,(* 2 hs) ,(* 3 hs)) :all)
+                (vt-matmul (vt-transpose dhn-linear) h-prev))
           (setf dwhh-acc (vt-+ dwhh-acc full-dwh)))
         ;; 3. bih
-        (let ((full-db
-                (vt-zeros (list (* 3 hs)))))
+        (let ((full-db (vt-zeros (list (* 3 hs)))))
           (setf (vt-slice full-db :all `(0 ,(* 2 hs)))
                 (vt-sum d-gates-rz :axis 0))
           (setf (vt-slice full-db
@@ -536,36 +528,41 @@
                 (vt-sum dn-pre :axis 0))
           (setf dbih-acc (vt-+ dbih-acc full-db)))
         ;; 4. bhh
-        (let ((full-dbh
-                (vt-zeros (list (* 3 hs)))))
+        (let ((full-dbh (vt-zeros (list (* 3 hs)))))
           (setf (vt-slice full-dbh :all `(0 ,(* 2 hs)))
                 (vt-sum d-gates-rz :axis 0))
           (setf (vt-slice full-dbh
                           :all `(,(* 2 hs) ,(* 3 hs)))
                 (vt-sum dhn-linear :axis 0))
           (setf dbhh-acc (vt-+ dbhh-acc full-dbh)))
-        ;; 5. dX = dY @ W
-        (let* ((wih-rz
-                 (vt-slice wih :all `(0 ,(* 2 hs))))
+        ;; 5. dX
+        (let* ((wih-rz (vt-slice wih :all `(0 ,(* 2 hs))))
                (dx-t (vt-+ (vt-matmul d-gates-rz wih-rz)
                            (vt-matmul dn-pre w-in))))
-          (setf (vt-slice grad-input :all idx :all)
-                dx-t))
-        ;; 6. dh_prev = dY @ W
-        (let* ((whh-rz
-                 (vt-slice whh :all `(0 ,(* 2 hs))))
-               (dh-from-rz
-                 (vt-matmul d-gates-rz whh-rz))
-               (dh-from-n
-                 (vt-matmul dhn-linear w-hn))
+          (setf (vt-slice grad-input :all idx :all) dx-t))
+        ;; 6. dh_prev
+        (let* ((whh-rz (vt-slice whh :all `(0 ,(* 2 hs))))
+               (dh-from-rz (vt-matmul d-gates-rz whh-rz))
+               (dh-from-n (vt-matmul dhn-linear w-hn))
                (dh-from-z (vt-* z-t dh)))
-          (setf dh-next
-                (vt-+ (vt-+ dh-from-rz dh-from-n)
-                      dh-from-z)))))
-    (setf (gru-dweight-ih l) dwih-acc)
-    (setf (gru-dweight-hh l) dwhh-acc)
-    (setf (gru-dbias-ih l) dbih-acc)
-    (setf (gru-dbias-hh l) dbhh-acc)
+          (setf dh-next (vt-+ (vt-+ dh-from-rz dh-from-n)
+                              dh-from-z)))))
+    (setf (gru-dweight-ih l)
+          (vt-+ (or (gru-dweight-ih l)
+                    (vt-zeros (vt-shape dwih-acc)))
+                dwih-acc))
+    (setf (gru-dweight-hh l)
+          (vt-+ (or (gru-dweight-hh l)
+                    (vt-zeros (vt-shape dwhh-acc)))
+                dwhh-acc))
+    (setf (gru-dbias-ih l)
+          (vt-+ (or (gru-dbias-ih l)
+                    (vt-zeros (vt-shape dbih-acc)))
+                dbih-acc))
+    (setf (gru-dbias-hh l)
+          (vt-+ (or (gru-dbias-hh l)
+                    (vt-zeros (vt-shape dbhh-acc)))
+                dbhh-acc))
     grad-input))
 
 (defmethod params ((l gru))
@@ -583,3 +580,37 @@
         (cons "weight_hh" (gru-dweight-hh l))
         (cons "bias_ih" (gru-dbias-ih l))
         (cons "bias_hh" (gru-dbias-hh l))))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

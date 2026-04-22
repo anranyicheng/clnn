@@ -6,7 +6,7 @@
   (:use #:cl)
   (:nicknames #:neural-net #:clnn)
   (:import-from #:clvt
-		;; ---- 张量核心 ----
+   ;; ---- 张量核心 ----
    :vt :vt-p :vt-data :vt-shape :vt-element-type
        :vt-zeros :vt-ones :vt-ones-like :vt-zeros-like
        :vt-const :vt-arange :vt-random :vt-random-normal
