@@ -3,98 +3,131 @@
 ;;;; ================================================================
 (in-package #:nn)
 
-;;; ----------------------------------------------------------------
-;;; 1. 数据生成器工厂 (局部函数)
-;;; ----------------------------------------------------------------
-(defun make-data-gen (fn x-min x-max)
-  "返回一个闭包，调用它将生成指定函数的批次数据。
-   FN: 接收双精度浮点数，返回双精度浮点数的函数 (如 #'sin)
-   X-MIN, X-MAX: 采样区间"
-  (lambda (batch-size)
-    (let ((x-list '())
-          (y-list '())
-          (range (- x-max x-min)))
-      (dotimes (idx batch-size)
-        (let ((x (+ x-min (random range))))
-          (push x x-list)
-          (push (funcall fn x) y-list)))
-      (values
-       (vt-reshape
-        (vt-from-sequence (nreverse x-list))
-        (list batch-size 1))
-       (vt-reshape
-        (vt-from-sequence (nreverse y-list))
-        (list batch-size 1))))))
+(defun tensor-has-nan-p (vt)
+  "检查张量中是否包含 NaN 或 Inf。利用 NaN 的唯一特性：x /= x"
+  (if (vt-p vt)
+      (let ((data (vt-data vt)))
+	(some (lambda (x) (or (not (numberp x))
+			      (not (= x x))))
+	      data))))
 
-;;; ----------------------------------------------------------------
-;;; 2. 核心训练引擎
-;;; ----------------------------------------------------------------
+;;; 1. 数据生成器工厂 (局部函数)
+(defun make-data-gen (fn x-min x-max &key (normalize-x t) (normalize-y t))
+  "极其稳健的数据生成器。使用 100 点采样估算范围，彻底消除溢出风险。"
+  (let* ((range (- x-max x-min))
+         (mid-x (/ (+ x-min x-max) 2.0d0))
+         (half-range-x (/ range 2.0d0))
+         (y-min most-positive-double-float)
+         (y-max most-negative-double-float))
+    (dotimes (i 100)
+      (let ((val (funcall fn (+ x-min (random range)))))
+        (when (< val y-min) (setf y-min val))
+        (when (> val y-max) (setf y-max val))))
+    (let ((y-range (- y-max y-min))
+          (mid-y (/ (+ y-min y-max) 2.0d0))
+          (half-range-y (/ (- y-max y-min) 2.0d0)))
+      (values
+       ;; 闭包 1：生成数据
+       (lambda (batch-size)
+         (let ((x-list '()) (y-list '()))
+           (dotimes (idx batch-size)
+             (let* ((raw-x (+ x-min (random range)))
+                    (x (if (and normalize-x (> range 0))
+                           (/ (- raw-x mid-x) half-range-x)
+                           raw-x))
+                    (raw-y (funcall fn raw-x))
+                    (y (if (and normalize-y (> y-range 1.0d-6))
+                           (/ (- raw-y mid-y) half-range-y)
+                           raw-y)))
+               (push x x-list)
+               (push y y-list)))
+           (values
+            (vt-reshape (vt-from-sequence (nreverse x-list)) (list batch-size 1))
+            (vt-reshape (vt-from-sequence (nreverse y-list)) (list batch-size 1)))))
+       ;; 闭包 2：反归一化
+       (lambda (y-scaled)
+         (if (and normalize-y (> y-range 1.0d-6))
+             (+ (* y-scaled half-range-y) mid-y)
+             y-scaled))))))
+
 (defun run-regression-test
     (fn x-min x-max input-dim layer-specs
-     &key (epochs 500) (batch-size 32)
-       (opt-type :sgd) (opt-args '(:lr 0.01d0))
+     &key (epochs 2000) (batch-size 128) 
+       (opt-type :adam) 
+       (opt-args '(:lr 0.001d0)) 
        (test-inputs '(-2.0d0 -1.0d0 0.0d0 1.0d0 2.0d0))
        (name "MLP"))
-  "通用的单变量/多变量回归测试函数。
-   LAYER-SPECS: 例如 ((16 :relu) (32 :relu) (1 :none))
-   OPT-TYPE: :sgd, :adam, :adamw 等
-   OPT-ARGS: 传给优化器的关键字参数列表"
-  (let* ((gen-fn (make-data-gen fn x-min x-max))
-         (model (make-sequential :name name)))
-    ;; 动态构建网络层
-    (dolist (spec layer-specs)
-      (seq-add! model
-                (apply #'make-dense
-                       (first spec)
-                       :activation (second spec)
-                       :name (format nil "~A-L~A" name (first spec))
-                       (cddr spec))))    
-    ;; 显式构建并打印参数量
-    (build-model model (vt-zeros (list 1 input-dim)))
-    (format t "[~A] 模型参数量: ~A~%" name (param-count model))    
-    ;; 实例化优化器
-    (let ((optimizer
-            (ecase opt-type
-              (:sgd (apply #'make-sgd opt-args))
-              (:adam (apply #'make-adam opt-args))
-              (:adamw (apply #'make-adamw opt-args))
-              (:rmsprop (apply #'make-rmsprop opt-args)))))
-      (format t "[~A] 开始训练 (~A Epochs)...~%" name epochs)
-      (format t "----------------------------------------~%")      
-      ;; 训练循环
-      (dotimes (epoch epochs)
-        (multiple-value-bind (x y)
-	    (funcall gen-fn batch-size)
-          (zero-grad! model)
-          (let* ((pred (model-forward model x))
-                 (diff (vt-- pred y))
-                 (loss-val (vt-mean (vt-square diff)))
-                 (n batch-size)
-                 (grad-output (vt-scale diff (/ 2.0d0 n))))
-            (model-backward model grad-output)
-            (model-update! model optimizer)
-            (when (zerop (mod epoch 100))
-              (format t "Epoch ~4D | Loss: ~6F~%"
-                      epoch loss-val)))))      
-      (format t "----------------------------------------~%")
-      ;; 推理测试
-      (when test-inputs
-        (let* ((len (length test-inputs))
-               (test-x (vt-reshape
-                        (vt-from-sequence test-inputs)
-                        (list len input-dim)))
-               (pred (model-forward model test-x))
-               (true-y (mapcar fn test-inputs)))
-          (format t "[~A] 推理对比:~%" name)
-          (format t "  X 输入: ~A~%" test-inputs)
-          (format t "  真实 Y: ~A~%" true-y)
-          (format t "  预测 Y: ")
-          (dotimes (i len)
-            (format t "~F, "
-                    (vt-ref pred i 0)))
-          (format t "~%")))      
-      ;; 返回模型供后续检查
-      model)))
+  "通用的单变量/多变量回归测试函数."
+  (multiple-value-bind (gen-fn denorm-fn) 
+      (make-data-gen fn x-min x-max :normalize-x t :normalize-y t)
+    (let* ((model (make-sequential :name name))
+           (num-layers (length layer-specs)))
+      ;; 动态构建网络层
+      (dotimes (i num-layers)
+        (let* ((spec (nth i layer-specs))
+               (is-last (= i (1- num-layers)))
+               (act (second spec)))
+          (seq-add! model
+                    (apply #'make-dense
+                           (first spec)
+                           :activation act
+                           :weight-init (make-xavier-uniform)
+			   :use-bias t  ;; 要警惕，这个一般必须开启，否则不收敛
+                           :bias-init (if (and is-last
+					       (or (null act)
+						   (eq act :none)))
+                                          (make-constant-init 0.1d0)
+                                          (make-zeros-init))
+                           :name (format nil "~A-L~A" name (first spec))
+                           (cddr spec)))))    
+      
+      (build-model model (vt-zeros (list 1 input-dim)))
+      (format t "[~A] 模型参数量: ~A~%" name (param-count model))    
+      
+      (let ((optimizer
+              (ecase opt-type
+                (:sgd (apply #'make-sgd opt-args))
+                (:adam (apply #'make-adam opt-args))
+                (:adamw (apply #'make-adamw opt-args))
+                (:rmsprop (apply #'make-rmsprop opt-args)))))
+        (format t "[~A] 开始训练 (~A Epochs)...~%" name epochs)	
+        (dotimes (epoch epochs)
+          (multiple-value-bind (x y)
+	      (funcall gen-fn batch-size)
+            (zero-grad! model)
+            (let* ((pred (model-forward model x))
+                   (diff (vt-- pred y))
+                   (loss-val (vt-mean (vt-square diff)))
+                   (grad-output (vt-scale diff (/ 1.0d0 batch-size))))
+              (model-backward model grad-output)	   
+              (model-update! model optimizer)
+              (when (zerop (mod epoch 200))
+                (format t "Epoch ~a | Loss: ~a~%" epoch loss-val)))))
+        (format t "----------------------------------------~%")
+        (when test-inputs
+          (let* ((len (length test-inputs))
+                 (range (- x-max x-min))
+                 (mid-x (/ (+ x-min x-max) 2.0d0))
+                 (half-range-x (/ range 2.0d0))
+                 (norm-inputs (mapcar (lambda (x)
+					(/ (- x mid-x)
+					   half-range-x))
+				      test-inputs))
+                 (test-x (vt-reshape
+			  (vt-from-sequence norm-inputs)
+			  (list len input-dim)))
+                 (pred-scaled (model-forward model test-x))
+                 (true-y (mapcar fn test-inputs))
+                 (pred-real '()))
+            (dotimes (i len)
+              (push (funcall denorm-fn (vt-ref pred-scaled i 0))
+		    pred-real))
+            (setf pred-real (nreverse pred-real))
+            (format t "[~A] 推理对比:~%" name)
+            (format t "  X 输入: ~A~%" test-inputs)
+            (format t "  真实 Y: ~A~%" true-y)
+            (format t "  预测 Y: ~A~%" pred-real)))      
+        model))))
 
 ;;; ----------------------------------------------------------------
 ;;; 测试 1: CNN 卷积网络 (验证 NCHW 空间维度推导)
@@ -123,7 +156,7 @@
         (backward conv grad)
         (model-update! conv opt)
         (when (zerop (mod epoch 10))
-          (format t "Epoch ~2D | Loss: ~6F~%" epoch loss))))
+          (format t "Epoch ~a | Loss: ~a~%" epoch loss))))
     (format t "[CNN] 维度传递与反向传播完美无缺!~%")))
 
 ;;; ----------------------------------------------------------------
@@ -157,7 +190,7 @@
           (backward lstm grad)
           (model-update! lstm opt)
           (when (zerop (mod epoch 10))
-            (format t "Epoch ~2D | Loss: ~6F~%" epoch loss)))))
+            (format t "Epoch ~a | Loss: ~a~%" epoch loss)))))
     (format t "[LSTM] BPTT 梯度截断与状态缓存无泄漏!~%")))
 
 ;;; ----------------------------------------------------------------
@@ -189,7 +222,7 @@
         (backward tb grad)
         (model-update! tb opt)
         (when (zerop (mod epoch 10))
-          (format t "Epoch ~2D | Loss: ~6F~%" epoch loss))))
+          (format t "Epoch ~a | Loss: ~a~%" epoch loss))))
     (format t "[Transformer] 3D转置、QKV切分与残差求导大成功!~%")))
 
 (defun test-gelu-residual-deep-net ()
@@ -222,7 +255,7 @@
           (dolist (l layers)
 	    (model-update! l opt))          
           (when (zerop (mod i 10))
-            (format t "Epoch ~2D | Loss: ~6F~%" i loss)))))
+            (format t "Epoch ~a | Loss: ~a~%" i loss)))))
     (format t "[通过] GELU导数正确，深层残差梯度未消失!~%")))
 
 
@@ -251,7 +284,7 @@
         (setf grad (backward lstm grad))
         (dolist (l layers) (model-update! l opt))
         (when (zerop (mod i 10))
-          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+          (format t "Epoch ~a | Loss: ~a~%" i loss))))
     (format t "[通过] LSTM 延迟初始化与序列反向传播正常!~%")))
 
 (defun test-nlp-basic-stack ()
@@ -297,7 +330,7 @@
         (dolist (l layers)
 	  (model-update! l opt))
         (when (zerop (mod i 10))
-          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+          (format t "Epoch ~a | Loss: ~a~%" i loss))))
     (format t "[通过] Embedding查表、LayerNorm、MHA串联无阻!~%")))
 
 (defun test-1d-input-edge-case ()
@@ -316,7 +349,7 @@
         (backward d grad)
         (model-update! d opt)
         (when (zerop (mod i 10))
-          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+          (format t "Epoch ~a | Loss: ~a~%" i loss))))
     (format t "[通过] 1D向量输入不会引发维度坍塌!~%")))
 
 
@@ -355,7 +388,7 @@
         (backward head grad)
         (model-update! head opt)
         (when (zerop (mod i 10))
-          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+          (format t "Epoch ~a | Loss: ~a~%" i loss))))
     (format t "[通过] 高维特征经全局池化后完美对接Dense层!~%")))
 
 (defun test-inception-branch-concat ()
@@ -392,7 +425,7 @@
         (dolist (l layers)
 	  (model-update! l opt))
         (when (zerop (mod i 10))
-          (format t "Epoch ~2D | Loss: ~6F~%" i loss))))
+          (format t "Epoch ~a | Loss: ~a~%" i loss))))
     (format t "[通过] DAG多分支计算与Concat反向传播正确!~%")))
 ;; 注：如果还没实现 vt-concat / vt-split，这个测试可以先跳过，去写这两个底层算子。
 
@@ -406,7 +439,8 @@
          (opt (make-adam :lr 0.1d0))
          (targets (vt-from-sequence
 		   (make-array batch :element-type 'fixnum 
-				     :initial-contents '(0 2 1 0 1 2 2 0 1 0)))))
+				     :initial-contents
+				     '(0 2 1 0 1 2 2 0 1 0)))))
     
     (build-model classifier dummy-features)    
     (dotimes (i 30)
@@ -420,7 +454,7 @@
         (backward classifier grad)
         (model-update! classifier opt)
         (when (zerop (mod i 5))
-          (format t "Epoch ~2D | CE-Loss: ~6F~%" i loss-val))))
+          (format t "Epoch ~a | CE-Loss: ~a~%" i loss-val))))
     (format t "[通过] CrossEntropyLoss 完美融入自动求导系统!~%")))
 
 (defun test-inception-routing ()
@@ -503,7 +537,8 @@
                  (diff (vt-- merged (vt-zeros (list batch seq-len 16))))
                  (loss-3d (vt-scale (vt-* diff diff) 0.5d0))
                  (current-loss (vt-mean loss-3d)))
-            (format t "Epoch ~2D | Inception Loss: ~8F~%" epoch current-loss)))))
+            (format t "Epoch ~a | Inception Loss: ~a~%"
+		    epoch current-loss)))))
     (format t "[通过] Split/Concat 负轴路由、零拷贝梯度拆分、NaN容错完美运行!~%")))
 
 (defun test-transformer-block ()
@@ -542,8 +577,11 @@
       
       (dotimes (epoch 30)
         ;; 梯度清零也要分别清
-        (zero-grad! ln1) (zero-grad! ln2)
-        (zero-grad! attn-dense) (zero-grad! ffn-dense1) (zero-grad! ffn-dense2)
+        (zero-grad! ln1)
+	(zero-grad! ln2)
+        (zero-grad! attn-dense)
+	(zero-grad! ffn-dense1)
+	(zero-grad! ffn-dense2)
         
         (let* ((target (vt-zeros (list batch seq-len dim)))
                
@@ -572,19 +610,20 @@
                  (grad-norm1 (vt-+ grad-res1-a grad-res1-b))
                  
                  (grad-attn-out (backward attn-dense grad-norm1)))
-                 (backward ln1 grad-attn-out))
-            
-            ;; ==============================================
-            ;; 分别使用专属优化器更新参数
-            ;; ==============================================
-            (model-update! ln1 opt-ln1)
-            (model-update! ln2 opt-ln2)
-            (model-update! attn-dense opt-attn)
-            (model-update! ffn-dense1 opt-ffn1)
-            (model-update! ffn-dense2 opt-ffn2)
-            
-            (when (zerop (mod epoch 10))
-              (format t "Epoch ~2D | Transformer Block Loss: ~8F~%" epoch scalar-loss)))))
+            (backward ln1 grad-attn-out))
+          
+          ;; ==============================================
+          ;; 分别使用专属优化器更新参数
+          ;; ==============================================
+          (model-update! ln1 opt-ln1)
+          (model-update! ln2 opt-ln2)
+          (model-update! attn-dense opt-attn)
+          (model-update! ffn-dense1 opt-ffn1)
+          (model-update! ffn-dense2 opt-ffn2)
+          
+          (when (zerop (mod epoch 10))
+            (format t "Epoch ~a | Transformer Block Loss: ~a~%"
+		    epoch scalar-loss)))))
     
     (format t "[通过] 模块组装、残差分流、动量隔离完美运行!~%")))
 
@@ -665,16 +704,16 @@
                  (grad-attn-out (backward attn-dense grad-norm1)))
             ;; 修复了之前多出来的右括号
             (backward ln1 grad-attn-out))
-            
-            ;; ==============================================
-            ;; 【高光时刻】一行代码更新所有层！
-            ;; model-update! 会自动把各层的名字传给 opt
-            ;; ==============================================
-            (dolist (l layers) (model-update! l opt))
-            
-            (when (zerop (mod epoch 10))
-              (format t "Epoch ~2D | Loss: ~8F~%"
-                      epoch scalar-loss)))))
+          
+          ;; ==============================================
+          ;; 【高光时刻】一行代码更新所有层！
+          ;; model-update! 会自动把各层的名字传给 opt
+          ;; ==============================================
+          (dolist (l layers) (model-update! l opt))
+          
+          (when (zerop (mod epoch 10))
+            (format t "Epoch ~a | Loss: ~a~%"
+                    epoch scalar-loss)))))
     
     (format t "[通过] 单一优化器 + 自动身份隔离，完美运行!~%")))
 
@@ -684,6 +723,7 @@
   (run-regression-test
    (lambda (x) (* x x)) -3.0d0 3.0d0 1
    '((16 :relu) (1 :none))
+   :epochs 1000
    :opt-type :sgd
    :opt-args '(:lr 0.01d0)
    :name "X-Squared-SGD")
@@ -692,6 +732,7 @@
   (run-regression-test
    #'sin -3.14d0 3.14d0 1
    '((32 :tanh) (16 :tanh) (1 :none))
+   :epochs 1000
    :opt-type :adam
    :opt-args '(:lr 0.02d0)
    :test-inputs '(-3.14d0 -1.57d0 0.0d0 1.57d0 3.14d0)
@@ -702,6 +743,7 @@
    (lambda (x) (- (* x x x) (* 2.0d0 x)))
    -2.0d0 2.0d0 1
    '((64 :relu) (32 :relu) (1 :none))
+   :epochs 1000
    :opt-type :adamw
    :opt-args '(:lr 0.01d0 :weight-decay 1e-4)
    :name "Cubic-AdamW")

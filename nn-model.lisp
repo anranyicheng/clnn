@@ -473,11 +473,9 @@
         (let ((name (c2mop:slot-definition-name slot)))
           (when (and (slot-boundp component name)
                      (let ((sname (symbol-name name)))
-                       ;; 匹配所有缓存 slot 和非梯度的状态量
-                       (or (search "cache" sname)
-                           (string= sname "BATCH-SIZE")
-                           (string= sname "NORM-SIZE")
-                           (string= sname "INDICES-CACHE"))))
+		       ;; 仅仅清理明确带有 cache 字样的 slot
+                       ;; 绝对不能清理 BATCH-SIZE 等反向传播依赖的整型状态！
+                       (search "cache" sname)))
             (setf (slot-value component name) nil))))))
   (:method ((component sequential))
     (dolist (layer (seq-layers component))

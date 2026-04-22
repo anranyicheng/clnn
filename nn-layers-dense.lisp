@@ -139,18 +139,20 @@
   (:documentation "全连接层: y = activation(x · W + b)"))
 
 (defun make-dense
-    (out-dim &key (in-dim nil) activation use-bias
-               weight-init bias-init leaky-alpha
-               (name "dense") (trainable t))
+    (out-dim &key (in-dim nil) (activation :relu) (use-bias t)
+               weight-init (bias-init (make-zeros-init))
+	       leaky-alpha (name "dense") (trainable t))
   "构造全连接层."
   (make-instance 'dense
-		 :out-dim out-dim :in-dim in-dim
-		 :activation (or activation :none)
+		 :out-dim out-dim
+		 :in-dim in-dim
+		 :activation activation
 		 :use-bias use-bias
 		 :weight-init weight-init
 		 :bias-init bias-init
 		 :leaky-alpha (or leaky-alpha 0.01d0)
-		 :name name :trainable trainable))
+		 :name name
+		 :trainable trainable))
 
 
 (defmethod forward ((l dense) input)
@@ -351,7 +353,7 @@
             ((:linear :none)             input)
             ((:softmax softmax)         (vt-softmax input))
             ((:log-softmax log-softmax) (vt-log-softmax input)))))
-    (setf (act-cache l) input)
+    (setf (act-cache l) out)
     out))
 
 (defmethod backward ((l activation-layer) grad-output)
@@ -366,10 +368,10 @@
               input (act-leaky-alpha l))))
       ((:sigmoid sigmoid)
        (vt-* grad-output
-             (vt-sigmoid-derivative (vt-sigmoid input))))
+             (vt-sigmoid-derivative input)))
       ((:tanh tanh)
        (vt-* grad-output
-             (vt-tanh-derivative (vt-tanh input))))
+             (vt-tanh-derivative input)))
       ((:gelu gelu)
        (vt-* grad-output (vt-gelu-derivative input)))
       ((:swish swish)

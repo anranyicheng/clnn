@@ -35,10 +35,10 @@
     (loop for p in param-list
           for (gname . grad) in grad-list
           for idx upfrom 0
-	  for owner = (first param-list)
-          for name = (second param-list)
-          for param = (third param-list)
-          for setter = (fourth param-list)
+	  for owner = (first p)
+          for name = (second p)
+          for param = (third p)
+          for setter = (fourth p)
           when (and param grad)
             do (let* ((key (list owner name idx))
                       (g (clip-gradient grad clip))
