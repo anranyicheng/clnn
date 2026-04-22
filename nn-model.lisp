@@ -82,7 +82,7 @@
   "使用优化器更新模型参数."
   (let ((param-list (params model))
         (grad-list (grads model)))
-    (optimizer-step optimizer model param-list grad-list)))
+    (optimizer-step optimizer param-list grad-list)))
 
 (defun collect-all-layers (component)
   "递归收集所有子层."
@@ -124,8 +124,8 @@
                   (when (or (not trainable-only)
                             (layer-trainable-p obj))
                     (dolist (p (params obj))
-                      ;; 协议修复: 取第二个元素
-                      (let ((tensor (second p)))
+                      ;; 协议修复: 取第三个元素
+                      (let ((tensor (third p)))
                         (when tensor
                           (incf total
                                 (reduce #'*
@@ -229,10 +229,10 @@
                   :name ,(layer-name l)
                   :params ,(mapcar
                             (lambda (p)
-                              ;; 协议修复: 取第二个元素
-                              (cons (first p)
+                              ;; 协议修复: 名字是第二个，张量是第三个
+                              (cons (second p)
                                     (vt-data->list
-                                     (second p))))
+                                     (third p))))
                             (params l))))
               (collect-all-layers model))))
 

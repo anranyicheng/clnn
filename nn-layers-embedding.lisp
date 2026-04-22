@@ -99,7 +99,7 @@
 
 (defmethod params ((l embedding))
   (when (emb-weight l)
-    (list (list "weight" (emb-weight l)
+    (list (list l "weight" (emb-weight l)
                 #'(lambda (v)
                     (setf (emb-weight l) v))))))
 

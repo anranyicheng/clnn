@@ -269,7 +269,7 @@
                                 (if (and (>= x -1.0d0)
                                          (<= x 1.0d0))
                                     1.0d0 0.0d0))
-                             z))))
+                              z))))
              ((:hard-sigmoid had-sigmoid)
               (vt-* grad-flat
                     (vt-hard-sigmoid-derivative
@@ -291,12 +291,12 @@
 (defmethod params ((l dense))
   (let ((result '()))
     (when (dense-weights l)
-      (push (list "weights" (dense-weights l)
+      (push (list l "weights" (dense-weights l)
                   #'(lambda (v)
                       (setf (dense-weights l) v)))
             result))
     (when (and (dense-use-bias-p l) (dense-bias l))
-      (push (list "bias" (dense-bias l)
+      (push (list l "bias" (dense-bias l)
                   #'(lambda (v)
                       (setf (dense-bias l) v)))
             result))

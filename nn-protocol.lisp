@@ -106,7 +106,7 @@
 (defun make-optimizer (&rest args)
   (apply #'make-instance 'optimizer args))
 
-(defgeneric optimizer-step (opt layer-id param-list grad-list)
+(defgeneric optimizer-step (opt param-list grad-list)
   (:documentation "对参数列表执行一步优化更新.
 PARAM-LIST = ((name tensor setter-fn) ...)
 GRAD-LIST = ((name . tensor) ...)"))

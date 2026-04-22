@@ -365,4 +365,4 @@
         (decf (vt-ref grad i target-idx) 1.0d0)))
     
     (vt-scale grad inv-batch)))
-    
+

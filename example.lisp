@@ -590,7 +590,7 @@
 
 
 (defun test-transformer-block-a ()
-  (format t "~%=== [测试 13] Transformer (单一优化器君临天下版) ===~%")
+  (format t "~%=== [测试 13-a] Transformer (单一优化器君临天下版) ===~%")
   
   (sb-vm::with-float-traps-masked
       (:invalid :divide-by-zero :overflow)

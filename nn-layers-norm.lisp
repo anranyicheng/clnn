@@ -199,9 +199,9 @@
 (defmethod params ((l batch-norm))
   (if (bn-affine-p l)
       (list
-       (list "gamma" (bn-gamma l)
+       (list l "gamma" (bn-gamma l)
              #'(lambda (v) (setf (bn-gamma l) v)))
-       (list "beta" (bn-beta l)
+       (list l "beta" (bn-beta l)
              #'(lambda (v) (setf (bn-beta l) v))))
       '()))
 
@@ -358,9 +358,9 @@
 (defmethod params ((l layer-norm))
   (if (ln-affine-p l)
       (list
-       (list "gamma" (ln-gamma l)
+       (list l "gamma" (ln-gamma l)
              #'(lambda (v) (setf (ln-gamma l) v)))
-       (list "beta" (ln-beta l)
+       (list l "beta" (ln-beta l)
              #'(lambda (v) (setf (ln-beta l) v))))
       '()))
 
