@@ -140,3 +140,21 @@ GRAD-LIST = ((name . tensor) ...)"))
 
 (defgeneric regularizer-penalty (reg param-list)
   (:documentation "计算正则化惩罚项（标量）."))
+
+(defclass stop-gradient-node ()
+  ((input :initarg :input :reader sg-input))
+  (:documentation
+   "阻断梯度回流的包装器节点。前向传播直通，反向传播返回 NIL。"))
+
+(defun vt-stop-gradient (tensor)
+  "对外暴露的 API：把一个张量包裹成断梯度节点。"
+  (make-instance 'stop-gradient-node :input tensor))
+
+(defmethod forward ((node stop-gradient-node) input)
+  (declare (ignore input))
+  (sg-input node))
+
+(defmethod backward ((node stop-gradient-node) grad)
+  "拦截传进来的梯度 grad，直接丢弃，不向 input 传递任何东西。"
+  (declare (ignore grad))
+  nil)

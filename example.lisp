@@ -144,7 +144,7 @@
          (opt (make-adam :lr 0.01d0)))    
     (build-model conv x)
     (format t "参数量: ~A~%" (param-count conv))
-    (dotimes (epoch 50)
+    (dotimes (epoch 100)
       (zero-grad! conv)
       (let* ((out (forward conv x))
              ;; Loss: 所有像素的 MSE
@@ -174,7 +174,7 @@
          (opt (make-adam :lr 0.01d0)))    
     (build-model lstm x)
     (format t "参数量: ~A~%" (param-count lstm))
-    (dotimes (epoch 50)
+    (dotimes (epoch 100)
       (zero-grad! lstm)
       ;; LSTM forward 返回 3 个值，我们只取完整输出 output
       (multiple-value-bind (out h c)
@@ -211,7 +211,7 @@
          (opt (make-adam :lr 0.005d0)))    
     (build-model tb x)
     (format t "参数量: ~A~%" (param-count tb))
-    (dotimes (epoch 50)
+    (dotimes (epoch 100)
       (zero-grad! tb)
       (let* ((out (forward tb x))
              ;; 目标: 恒等映射 (让输出逼近输入 x)
@@ -239,7 +239,7 @@
     ;; 初始化
     (build-model (make-instance 'layer) x)
     (dolist (l layers) (build-model l x))
-    (dotimes (i 50)
+    (dotimes (i 100)
       ;; 【修正】：手动遍历清零梯度
       (dolist (l layers) (zero-grad! l))      
       (let ((out x))
@@ -273,7 +273,7 @@
     ;; 【修正】：用正确的 LSTM 输出形状来欺骗 proj 进行初始化
     ;; 这样 proj 才会生成 (16 -> 8) 的权重矩阵
     (build-model proj (vt-zeros (list batch seq-len hidden-dim)))
-    (dotimes (i 30)
+    (dotimes (i 100)
       (dolist (l layers)
 	(zero-grad! l))
       (let* ((h (forward lstm x))
@@ -312,7 +312,7 @@
     ;; 触发 embedding 初始化
     (forward emb token-ids)
     
-    (dotimes (i 20)
+    (dotimes (i 100)
       ;; 【修正2】：手动遍历清零，绝对不能传 List 进去
       (dolist (l layers)
 	(zero-grad! l))
@@ -339,7 +339,7 @@
          (d (make-dense 8 :activation :sigmoid))
          (opt (make-adam :lr 0.1d0)))
     (build-model d x)
-    (dotimes (i 20)
+    (dotimes (i 100)
       (zero-grad! d)
       (let* ((out (forward d x))
              (target (vt-ones (list 8)))
@@ -377,7 +377,7 @@
          (head (make-dense num-classes :activation :none))
          (opt (make-adam :lr 0.05d0)))
     (build-model head (vt-zeros (list batch feat))) ;; 注意：池化后特征维度变了
-    (dotimes (i 30)
+    (dotimes (i 100)
       (zero-grad! head)
       ;; 【手动实现全局平均池化】：沿 axis=1 求均值，形状变为
       (let* ((pooled (vt-mean features :axis 1)) 
@@ -392,7 +392,7 @@
     (format t "[通过] 高维特征经全局池化后完美对接Dense层!~%")))
 
 (defun test-inception-branch-concat ()
-  (format t "~%=== [测试 10] 多分支并行计算与拼接 ===~%")
+  (format t "~%=== [测试 10-a] 多分支并行计算与拼接 ===~%")
   (let* ((x (vt-random-normal (list 3 16)))
          ;; 分支 1：降维到 8
          (branch1 (make-dense 8 :activation :relu))
@@ -404,7 +404,7 @@
     (dolist (l layers)
       (build-model l x))
     
-    (dotimes (i 30)
+    (dotimes (i 1000)
       (dolist (l layers)
 	(zero-grad! l))
       ;; 并行前向传播
@@ -424,11 +424,53 @@
         ;; 并行更新
         (dolist (l layers)
 	  (model-update! l opt))
-        (when (zerop (mod i 10))
+        (when (zerop (mod i 100))
           (format t "Epoch ~a | Loss: ~a~%" i loss))))
     (format t "[通过] DAG多分支计算与Concat反向传播正确!~%")))
 ;; 注：如果还没实现 vt-concat / vt-split，这个测试可以先跳过，去写这两个底层算子。
 
+(defun test-inception-branch-concat-b ()
+  (format t "~%=== [测试 10-b] 多分支并行计算与拼接 ===~%")
+  (let* ((x (vt-random-normal (list 3 16)))
+         ;; 关键改动：定义一个非零目标，shape 必须和 concat-out 一致
+         (target (vt-ones (list 3 16))) ;; 全 1 目标
+         (branch1 (make-dense 8 :activation :tanh))
+         (branch2 (make-dense 8 :activation :tanh))
+         (layers (list branch1 branch2))
+         (opt (make-adam :lr 0.01d0)))
+    (dolist (l layers)
+      (build-model l x))
+    
+    (dotimes (i 10000) ;; 多训练几轮
+      (dolist (l layers)
+        (zero-grad! l))
+      (let* ((out1 (forward branch1 x))
+             (out2 (forward branch2 x))
+             (concat-out (vt-concatenate -1 out1 out2))
+             ;; 关键改动：Loss = mean(square(预测 - 目标))
+             (diff (vt-- concat-out target))
+             (loss (coerce (vt-mean (vt-square diff)) 'double-float))
+             ;; 关键改动：梯度从 diff 出发，而不是从 concat-out 出发
+             (grad (vt-scale diff (/ 2.0d0 (* 3 16))))
+             (grads-list (vt-split grad 2 :axis -1))
+             (grad1 (first grads-list))
+             (grad2 (second grads-list)))
+        (backward branch1 grad1)
+        (backward branch2 grad2)
+        (dolist (l layers)
+          (model-update! l opt))
+        (when (zerop (mod i 100))
+          (format t "Epoch ~a | Loss: ~a~%" i loss))))
+    
+    ;; 最终验证：检查输出是否真的逼近了 target (全1)
+    (let* ((out1 (forward branch1 x))
+           (out2 (forward branch2 x))
+           (concat-out (vt-concatenate -1 out1 out2))
+           (mean-val (coerce (vt-mean concat-out) 'double-float)))
+      (format t "最终输出均值 (应接近 1.0): ~a~%" mean-val)
+      (if (< (abs (- mean-val 1.0d0)) 0.1d0)
+          (format t "[通过] DAG多分支计算与Concat反向传播正确!~%")
+          (format t "[失败] 输出未逼近目标，反向传播可能有误!~%")))))
 
 (defun test-classification-loss ()
   (format t "~%=== [测试 11] 真实分类交叉熵损失 ===~%")
@@ -443,7 +485,7 @@
 				     '(0 2 1 0 1 2 2 0 1 0)))))
     
     (build-model classifier dummy-features)    
-    (dotimes (i 30)
+    (dotimes (i 100)
       (zero-grad! classifier)
       (let* ((logits (forward classifier dummy-features))
              ;; 传入
@@ -481,7 +523,7 @@
       ;; 延迟初始化
       (dolist (l layers)
 	(build-model l x))      
-      (dotimes (epoch 20)
+      (dotimes (epoch 100)
         ;; 1. 梯度清零
         (dolist (l layers) (zero-grad! l))
         ;; ==============================================
@@ -575,7 +617,7 @@
       (build-model ffn-dense1 x)
       (build-model ffn-dense2 (vt-zeros (list batch seq-len hidden-dim)))
       
-      (dotimes (epoch 30)
+      (dotimes (epoch 100)
         ;; 梯度清零也要分别清
         (zero-grad! ln1)
 	(zero-grad! ln2)
@@ -667,7 +709,7 @@
       (build-model ffn-dense2
                    (vt-zeros (list batch seq-len hidden-dim)))
       
-      (dotimes (epoch 30)
+      (dotimes (epoch 100)
         ;; 优雅：一行代码清零所有层的梯度
         (dolist (l layers) (zero-grad! l))
         
@@ -761,8 +803,10 @@
   (test-dropout-switch)
   (test-global-pooling-classifier)
   (test-inception-branch-concat)
+  (test-inception-branch-concat-b)
   (test-classification-loss)
   (test-inception-routing)
   (test-transformer-block)
   (test-transformer-block-a)
   )
+
