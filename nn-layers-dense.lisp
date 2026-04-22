@@ -38,7 +38,6 @@
   "Tanh 导数: 1 - a^2"
   (vt-- 1.0d0 (vt-* a a)))
 
-(defparameter *a* nil)
 (defun vt-gelu-derivative (x)
   "GELU 导数（近似）."
   (let* ((c (sqrt (/ 2.0d0 pi)))
@@ -83,11 +82,13 @@
 
 (defclass dense (layer)
   ((in-dim :initarg :in-dim
+	   :initform nil
 	   :reader dense-in-dim
-           :type fixnum)
+           :type (or null fixnum))
    (out-dim :initarg :out-dim
+	    :initform nil
 	    :reader dense-out-dim
-            :type fixnum)
+            :type (or null fixnum))
    (weight-init :initarg :weight-init
 		:initform nil
                 :accessor dense-weight-init)
@@ -199,14 +200,15 @@
               ((:relu relu) (vt-relu z))
               ((:leaky-relu leaky-relu)
                (vt-leaky-relu z (dense-leaky-alpha l)))
-              ((:sigmoid sigmoid) (vt-sigmoid z))
+              ((:sigmoid sigmoid)
+	       (vt-sigmoid z))
               ((:tanh tanh) (vt-tanh z))
               ((:gelu gelu) (vt-gelu z))
               ((:swish swish) (vt-swish z))
               ((:mish mish) (vt-mish z))
               ((:softplus softplus) (vt-softplus z))
               ((:hard-tanh hard-tanh) (vt-hard-tanh z))
-              ((:hard-sigmoid had-sigmoid)
+              ((:hard-sigmoid hard-sigmoid)
                (vt-hard-sigmoid z)))))
     ;; 巧妙利用 cons 打包，同时缓存原始形状和展平输入
     (setf (dense-input-cache l) (cons in-shape x-flat))
@@ -272,7 +274,7 @@
                                          (<= x 1.0d0))
                                     1.0d0 0.0d0))
                               z))))
-             ((:hard-sigmoid had-sigmoid)
+             ((:hard-sigmoid hard-sigmoid)
               (vt-* grad-flat
                     (vt-hard-sigmoid-derivative
                      (dense-z-cache l))))))
@@ -281,7 +283,7 @@
                         d-activation)))
     (setf (dense-dw l) dw)
     (when (dense-use-bias-p l)
-      (setf (dense-db l) (vt-sum d-activation :axis 0)))
+      (setf (dense-db l) (vt-sum d-activation :axis 0 :keepdims t)))
     ;; 计算输入梯度并还原形状
     (let ((d-x-flat (vt-matmul d-activation
                                (vt-transpose w))))

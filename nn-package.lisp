@@ -75,7 +75,7 @@
    ;; ============= 模型容器 =============
    :sequential :make-sequential :seq-add! :seq-insert!
    :model-forward :model-backward :model-update!
-
+   :zero-grad!
    ;; ============= 损失函数 =============
    :loss :make-loss
    :mse-loss :make-mse-loss
