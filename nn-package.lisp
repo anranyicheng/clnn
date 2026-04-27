@@ -27,8 +27,8 @@
        :vt-clip :vt-concatenate :vt-norm
    :vt-mean-squared-error :vt-binary-cross-entropy
    :vt-cross-entropy
-       :vt-to-2d-array :vt-from-2d-array
-       :vt-flatten-sequence :vt-from-sequence :vt-data->list
+       :vt-to-array :vt-from-array
+       :vt-flatten-sequence :vt-from-sequence :vt-to-list
    :vt-inv :vt-det :vt-solve :vt-trace
    :vt-take
    :vt-copy-into :vt-flatten)

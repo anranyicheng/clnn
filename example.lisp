@@ -295,7 +295,7 @@
          (vocab 100)
          ;; 模拟输入的 Token ID (整数张量)
          (token-ids
-	   (vt-from-2d-array
+	   (vt-from-array
 	    (make-array (list batch seq-len) 
                         :element-type 'fixnum 
                         :initial-contents '((1 5 9 20 3 45)

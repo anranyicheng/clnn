@@ -25,7 +25,7 @@
   (vt-map
    (lambda (x) (if (> x 0.0d0) 1.0d0 0.0d0)) z))
 
-(defun vt-leaky-relu-derivative (z &optional (alpha 0.01d0))
+(defun vt-leaky-relu-derivative (z &key (alpha 0.01d0))
   "Leaky ReLU 导数."
   (vt-map
    (lambda (x) (if (> x 0.0d0) 1.0d0 alpha)) z))
@@ -199,7 +199,7 @@
               ((:none :linear) z)
               ((:relu relu) (vt-relu z))
               ((:leaky-relu leaky-relu)
-               (vt-leaky-relu z (dense-leaky-alpha l)))
+               (vt-leaky-relu z :alpha (dense-leaky-alpha l)))
               ((:sigmoid sigmoid)
 	       (vt-sigmoid z))
               ((:tanh tanh) (vt-tanh z))
@@ -246,7 +246,7 @@
               (vt-* grad-flat
                     (vt-leaky-relu-derivative
                      (dense-z-cache l)
-                     (dense-leaky-alpha l))))
+                     :alpha (dense-leaky-alpha l))))
              ((:sigmoid sigmoid)
               (vt-* grad-flat
                     (vt-sigmoid-derivative (dense-a-cache l))))
@@ -341,8 +341,8 @@
   (let ((out
           (ecase (activation-kind l)
             ((:relu relu)               (vt-relu input))
-            ((:leaky-relu               leaky-relu)
-             (vt-leaky-relu input      (act-leaky-alpha l)))
+            ((:leaky-relu leaky-relu)
+             (vt-leaky-relu input :alpha (act-leaky-alpha l)))
             ((:sigmoid sigmoid)         (vt-sigmoid input))
             ((:tanh tanh)               (vt-tanh input))
             ((:gelu gelu)               (vt-gelu input))
@@ -366,7 +366,7 @@
       ((:leaky-relu leaky-relu)
        (vt-* grad-output
              (vt-leaky-relu-derivative
-              input (act-leaky-alpha l))))
+              input :alpha (act-leaky-alpha l))))
       ((:sigmoid sigmoid)
        (vt-* grad-output
              (vt-sigmoid-derivative input)))

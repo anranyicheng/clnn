@@ -581,36 +581,3 @@
         (cons "bias_ih" (gru-dbias-ih l))
         (cons "bias_hh" (gru-dbias-hh l))))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

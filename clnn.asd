@@ -17,4 +17,6 @@
 	       (:file "nn-protocol")
 	       (:file "nn-layers-dense")
 	       (:file "nn-model")
-	       (:file "nn-scheduler")))
+	       (:file "nn-scheduler")
+	       (:file "nn-autograd")
+	       ))

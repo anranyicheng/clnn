@@ -94,7 +94,7 @@
                  'double-float)))))
     (setf (emb-dw l)
           (vt-reshape
-           (vt-from-2d-array dw-data)
+           (vt-from-array dw-data)
            (list ne ed)))))
 
 (defmethod params ((l embedding))

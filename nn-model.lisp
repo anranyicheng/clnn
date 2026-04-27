@@ -201,7 +201,7 @@
                          'fixnum)))
         (setf (aref result-data i idx) 1.0d0)))
     (vt-reshape
-     (vt-from-2d-array result-data)
+     (vt-from-array result-data)
      (list batch num-classes))))
 
 (defun tensor-masked-fill (x mask value)
@@ -231,7 +231,7 @@
                             (lambda (p)
                               ;; 协议修复: 名字是第二个，张量是第三个
                               (cons (second p)
-                                    (vt-data->list
+                                    (vt-to-list
                                      (third p))))
                             (params l))))
               (collect-all-layers model))))
