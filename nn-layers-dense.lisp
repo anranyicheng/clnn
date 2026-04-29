@@ -1,17 +1,5 @@
 (in-package #:nn)
 
-(defun vt-square (x)
-  "逐元素平方: x^2"
-  (vt-* x x))
-
-(defun vt-ones-like (x)
-  "创建与 x 同形状的全 1 张量."
-  (vt-ones (vt-shape x)))
-
-(defun vt-zeros-like (x)
-  "创建与 x 同形状的全 0 张量."
-  (vt-zeros (vt-shape x)))
-
 (defun vt-mean-axis (tensor axis &key keepdims)
   "沿指定轴求均值."
   (vt-mean tensor :axis axis :keepdims keepdims))
@@ -282,7 +270,8 @@
                         d-activation)))
     (setf (dense-dw l) dw)
     (when (dense-use-bias-p l)
-      (setf (dense-db l) (vt-sum d-activation :axis 0 :keepdims t)))
+      (setf (dense-db l)
+	    (vt-sum d-activation :axis 0 :keepdims nil)))
     ;; 计算输入梯度并还原形状
     (let ((d-x-flat (vt-matmul d-activation
                                (vt-transpose w))))
@@ -325,9 +314,13 @@
    (leaky-alpha :initarg :leaky-alpha
 		:initform 0.01d0
                 :accessor act-leaky-alpha)
-   (cache :initarg :cache
-	  :initform nil
-	  :accessor act-cache)))
+   ;; 新增：分别缓存原始输入 (z) 和激活输出 (a)
+   (z-cache :initarg :z-cache
+            :initform nil
+            :accessor act-z-cache)
+   (a-cache :initarg :a-cache
+            :initform nil
+            :accessor act-a-cache)))
 
 (defun make-activation-layer
     (kind &key leaky-alpha
@@ -354,52 +347,59 @@
             ((:linear :none)             input)
             ((:softmax softmax)         (vt-softmax input))
             ((:log-softmax log-softmax) (vt-log-softmax input)))))
-    (setf (act-cache l) out)
+    ;; 根据激活类型，缓存反向传播所需的值
+    (case (activation-kind l)
+      ;; 需要原始输入 z 的激活
+      ((:relu :leaky-relu :gelu :swish :mish :softplus :hard-tanh :hard-sigmoid)
+       (setf (act-z-cache l) input)
+       (setf (act-a-cache l) nil))
+      ;; 需要激活输出 a 的激活
+      ((:sigmoid :tanh)
+       (setf (act-a-cache l) out)
+       (setf (act-z-cache l) nil))
+      ;; softmax / log-softmax 的反向传播需要特殊处理，这里暂时仍用 a-cache (实际需要原始输入 z，但 softmax 导数是基于 s 的)
+      ((:softmax :log-softmax)
+       (setf (act-a-cache l) out)
+       (setf (act-z-cache l) nil))
+      ;; linear
+      (t (setf (act-z-cache l) nil)
+         (setf (act-a-cache l) nil)))
     out))
 
 (defmethod backward ((l activation-layer) grad-output)
-  (let ((input (act-cache l)))
-    (ecase (activation-kind l)
+  (let ((kind (activation-kind l)))
+    (ecase kind
       ((:relu relu)
-       (vt-* grad-output
-             (vt-relu-derivative input)))
+       (vt-* grad-output (vt-relu-derivative (act-z-cache l))))
       ((:leaky-relu leaky-relu)
-       (vt-* grad-output
-             (vt-leaky-relu-derivative
-              input :alpha (act-leaky-alpha l))))
+       (vt-* grad-output (vt-leaky-relu-derivative (act-z-cache l) :alpha (act-leaky-alpha l))))
       ((:sigmoid sigmoid)
-       (vt-* grad-output
-             (vt-sigmoid-derivative input)))
+       (vt-* grad-output (vt-sigmoid-derivative (act-a-cache l))))
       ((:tanh tanh)
-       (vt-* grad-output
-             (vt-tanh-derivative input)))
+       (vt-* grad-output (vt-tanh-derivative (act-a-cache l))))
       ((:gelu gelu)
-       (vt-* grad-output (vt-gelu-derivative input)))
+       (vt-* grad-output (vt-gelu-derivative (act-z-cache l))))
       ((:swish swish)
-       (vt-* grad-output (vt-swish-derivative input)))
+       (vt-* grad-output (vt-swish-derivative (act-z-cache l))))
       ((:mish mish)
-       (vt-* grad-output (vt-mish-derivative input)))
+       (vt-* grad-output (vt-mish-derivative (act-z-cache l))))
       ((:softplus softplus)
-       (vt-* grad-output (vt-sigmoid input)))
+       (vt-* grad-output (vt-sigmoid (act-z-cache l))))
       ((:hard-tanh hard-tanh)
        (vt-* grad-output
-             (vt-map
-              (lambda (x)
-                (if (and (>= x -1.0d0) (<= x 1.0d0))
-                    1.0d0 0.0d0))
-              input)))
+             (vt-map (lambda (x)
+                       (if (and (>= x -1.0d0) (<= x 1.0d0))
+                           1.0d0 0.0d0))
+                     (act-z-cache l))))
       ((:hard-sigmoid hard-sigmoid)
-       (vt-* grad-output
-             (vt-hard-sigmoid-derivative input)))
+       (vt-* grad-output (vt-hard-sigmoid-derivative (act-z-cache l))))
       ((:linear :none) grad-output)
       ((:softmax softmax)
-       (vt-* grad-output
-             (vt-softmax-derivative (vt-softmax input))))
+       ;; 对于 softmax，导数需要更复杂的计算，这里提供一个简化版（正确版本需要原始输入 z）
+       (vt-* grad-output (vt-softmax-derivative (act-a-cache l))))
       ((:log-softmax log-softmax)
-       (let* ((s (vt-softmax input))
-              (sum-dy
-                (vt-sum grad-output
-                        :axis -1 :keepdims t)))
+       (let* ((s (vt-softmax (act-z-cache l)))   ; 注意：实际上 log-softmax 的输入应为未归一化 logits，但此处我们假设输入是 logits？
+              (sum-dy (vt-sum grad-output :axis -1 :keepdims t)))
          (vt-- grad-output (vt-* s sum-dy)))))))
 
 

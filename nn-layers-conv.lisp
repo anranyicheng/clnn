@@ -1,7 +1,7 @@
 (in-package #:nn)
 
 (defun im2col (input kh kw sh sw ph pw)
-  "将 (batch, c, h, w) 转为 (batch*oh*ow, c*kh*kw)."
+  "将 (batch, c, h, w) 转为 (batch*oh*ow, c*kh*kw) 矩阵。"
   (let* ((shape (vt-shape input))
          (batch (first shape))
          (channels (second shape))
@@ -11,10 +11,7 @@
          (ow (1+ (floor (- (+ in-w (* 2 pw)) kw) sw)))
          (col-rows (* batch oh ow))
          (col-cols (* channels kh kw))
-         (result-data
-           (make-array (list col-rows col-cols)
-                       :element-type 'double-float
-                       :initial-element 0.0d0)))
+         (result (vt-zeros (list col-rows col-cols))))
     (dotimes (b batch)
       (dotimes (i oh)
         (dotimes (j ow)
@@ -26,36 +23,21 @@
                          (iw (+ (* j sw) kj (- pw)))
                          (val (if (and (>= ih 0) (< ih in-h)
                                        (>= iw 0) (< iw in-w))
-                                  (coerce (vt-ref input
-                                                  b c ih iw)
-                                          'double-float)
+                                  (vt-ref input b c ih iw)
                                   0.0d0))
-                         (col-idx (+ (* c kh kw)
-                                     (* ki kw) kj)))
-                    (setf (aref result-data row-idx col-idx)
-                          val)))))))))
-    (let* ((total (* col-rows col-cols))
-           (flat (make-array total
-                             :element-type 'double-float)))
-      (dotimes (i total)
-        (setf (aref flat i) (row-major-aref result-data i)))
-      (vt-reshape (vt-from-sequence (coerce flat 'list))
-                  (list col-rows col-cols)))))
-
+                         (col-idx (+ (* c kh kw) (* ki kw) kj)))
+                    (setf (vt-ref result row-idx col-idx) val)))))))))
+    result))
 
 (defun col2im (col kh kw sh sw ph pw in-shape)
-  "col2im 逆操作."
+  "col2im 逆操作。"
   (let* ((batch (first in-shape))
          (channels (second in-shape))
          (in-h (third in-shape))
          (in-w (fourth in-shape))
          (oh (1+ (floor (- (+ in-h (* 2 ph)) kh) sh)))
          (ow (1+ (floor (- (+ in-w (* 2 pw)) kw) sw)))
-         (result-data
-           (make-array (list batch channels in-h in-w)
-                       :element-type 'double-float
-                       :initial-element 0.0d0)))
-    ;; 循环累加
+         (result (vt-zeros in-shape)))
     (dotimes (b batch)
       (dotimes (i oh)
         (dotimes (j ow)
@@ -65,26 +47,12 @@
                 (dotimes (kj kw)
                   (let* ((ih (+ (* i sh) ki (- ph)))
                          (iw (+ (* j sw) kj (- pw)))
-                         (col-idx (+ (* c kh kw)
-                                     (* ki kw) kj))
-                         (col-val
-                           (coerce
-                            (vt-ref col row-idx col-idx)
-                            'double-float)))
+                         (col-idx (+ (* c kh kw) (* ki kw) kj))
+                         (col-val (vt-ref col row-idx col-idx)))
                     (when (and (>= ih 0) (< ih in-h)
                                (>= iw 0) (< iw in-w))
-                      (incf (aref result-data b c ih iw)
-                            col-val))))))))))
-    ;; 安全构造张量
-    (let* ((total (reduce #'* in-shape))
-           (flat (make-array total
-                             :element-type 'double-float)))
-      (dotimes (i total)
-        (setf (aref flat i)
-              (row-major-aref result-data i)))
-      (vt-reshape (vt-from-sequence (coerce flat 'list))
-                  in-shape))))
-
+                      (incf (vt-ref result b c ih iw) col-val))))))))))
+    result))
 
 (defclass conv2d (layer)
   ((in-channels :initarg :in-channels

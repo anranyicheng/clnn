@@ -74,42 +74,26 @@
 		 :name name))
 
 (defmethod compute-loss ((l ce-loss) predicted target)
-  (let* ((batch (first (vt-shape predicted)))
+  (let* ((eps (ce-eps l))
          (smoothing (ce-label-smoothing l))
-         (nll 0.0d0))
-    (dotimes (i batch)
-      (let ((label (coerce (vt-ref target i) 'fixnum)))
-        (incf nll (- (coerce (vt-ref predicted i label)
-                             'double-float)))))
-    (let ((smooth-loss
-            (if (> smoothing 0.0d0)
-                (* smoothing
-                   (vt-mean predicted))
-                0.0d0)))
-      (let ((total (+ (* (- 1.0d0 smoothing) (/ nll batch))
-		      smooth-loss)))
-        (ecase (loss-reduction l)
-          (:mean total)
-          (:sum (* total batch))
-          (:none
-           (let ((per-sample
-		   (make-array batch
-                               :element-type
-                               'double-float)))
-             (dotimes (i batch)
-	       (let* ((label (coerce (vt-ref target i)
-                                     'fixnum))
-		      (s-loss (- (vt-ref predicted
-                                         i label))))
-                 (when (> smoothing 0.0d0)
-                   (incf s-loss
-                         (* smoothing
-                            (vt-mean
-                             (vt-slice predicted i :all)))))
-                 (setf (aref per-sample i) s-loss)))
-             (vt-reshape
-              (vt-from-sequence per-sample)
-              (list batch)))))))))
+         (pred-clipped (vt-clip predicted eps 1.0d0))
+         ;; 提取真实类别对应的 log 概率 (shape: batch)
+         (target-logprob (vt-take pred-clipped target :axis 1))
+         ;; 负对数似然部分 (不乘权重的原始 NLL)
+         (nll (vt-- target-logprob))                      ; nll = -log_prob_target
+         ;; 平滑部分：- smoothing * mean(log_prob)
+         (smooth-term
+           (when (> smoothing 0.0d0)
+             (vt-scale (vt-mean pred-clipped :axis 1) (- smoothing)))))
+    ;; 每个样本的真实损失 = (1-smoothing)*nll + smooth-term
+    (let ((per-sample (if smooth-term
+                          (vt-+ (vt-scale nll (- 1.0d0 smoothing))
+                                smooth-term)
+                          nll)))
+      (ecase (loss-reduction l)
+        (:mean (vt-mean per-sample))
+        (:sum  (vt-sum per-sample))
+        (:none per-sample)))))
 
 (defmethod compute-loss-gradient ((l ce-loss) predicted target)
   (let* ((batch (first (vt-shape predicted)))

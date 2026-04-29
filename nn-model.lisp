@@ -115,21 +115,21 @@
 (defun param-count (model &key trainable-only)
   "统计模型参数量."
   (let ((total 0))
-    (labels ((count-in (obj)
-               (cond
-                 ((typep obj 'sequential)
-                  (dolist (l (seq-layers obj))
-                    (count-in l)))
-                 (t
-                  (when (or (not trainable-only)
-                            (layer-trainable-p obj))
-                    (dolist (p (params obj))
-                      ;; 协议修复: 取第三个元素
-                      (let ((tensor (third p)))
-                        (when tensor
-                          (incf total
-                                (reduce #'*
-					(vt-shape tensor)))))))))))
+    (labels
+	((count-in (obj)
+           (cond
+             ((typep obj 'sequential)
+              (dolist (l (seq-layers obj))
+                (count-in l)))
+             (t
+              (when (or (not trainable-only)
+                        (layer-trainable-p obj))
+                (dolist (p (params obj))
+                  ;; 协议修复: 取第三个元素
+                  (let ((tensor (third p)))
+                    (when tensor
+                      (incf total
+                            (reduce #'* (vt-shape tensor)))))))))))
       (count-in model))
     total))
 
@@ -229,7 +229,6 @@
                   :name ,(layer-name l)
                   :params ,(mapcar
                             (lambda (p)
-                              ;; 协议修复: 名字是第二个，张量是第三个
                               (cons (second p)
                                     (vt-to-list
                                      (third p))))
@@ -308,26 +307,59 @@
         (return-from set-slot-value-by-name)))))
 
 (defun copy-network (source)
-  "深拷贝网络."
+  "深拷贝网络，保留所有可学习参数、激活类型和运行统计量。"
   (let ((new-model
           (etypecase source
             (sequential
              (make-sequential
-              :name (concatenate
-                     'string
-                     (layer-name source) "-copy")))
+              :name (concatenate 'string (layer-name source) "-copy")))
             (layer
-             (make-instance
-              (class-of source)
-              :name (concatenate
-                     'string
-                     (layer-name source) "-copy")
-              :trainable
-              (layer-trainable-p source))))))
+             (let ((class (class-of source)))
+               (cond
+                 ;; Dense 层
+                 ((eq class (find-class 'dense))
+                  (make-dense (dense-out-dim source)
+                              :in-dim (dense-in-dim source)
+                              :activation (dense-activation source)
+                              :use-bias (dense-use-bias-p source)
+                              :leaky-alpha (dense-leaky-alpha source)
+                              :name (concatenate 'string (layer-name source) "-copy")
+                              :trainable (layer-trainable-p source)))
+                 ;; Conv2d 层
+                 ((eq class (find-class 'conv2d))
+                  (make-conv2d (conv-out-channels source)
+                               (conv-kernel-size source)
+                               :in-channels (conv-in-channels source)
+                               :stride (conv-stride source)
+                               :padding (conv-padding source)
+                               :use-bias (conv-use-bias-p source)
+                               :name (concatenate 'string (layer-name source) "-copy")
+                               :trainable (layer-trainable-p source)))
+                 ;; BatchNorm 层
+                 ((eq class (find-class 'batch-norm))
+                  (make-batch-norm (bn-num-features source)
+                                   :eps (bn-eps source)
+                                   :momentum (bn-momentum source)
+                                   :affine (bn-affine-p source)
+                                   :name (concatenate 'string (layer-name source) "-copy")
+                                   :trainable (layer-trainable-p source)))
+                 ;; LayerNorm 层
+                 ((eq class (find-class 'layer-norm))
+                  (make-layer-norm (ln-normalized-shape source)
+                                   :eps (ln-eps source)
+                                   :affine (ln-affine-p source)
+                                   :name (concatenate 'string (layer-name source) "-copy")
+                                   :trainable (layer-trainable-p source)))
+                 ;; 其他层（激活层、dropout、池化层等）直接复制，保留原有构造函数
+                 (t
+                  (make-instance class
+                                 :name (concatenate 'string (layer-name source) "-copy")
+                                 :trainable (layer-trainable-p source)))))))))
+    ;; 递归复制子层（Sequential）
     (when (typep source 'sequential)
-      (dolist (orig-layer (seq-layers source))
-        (let ((new-layer (copy-network orig-layer)))
-          (seq-add! new-model new-layer))))
+      (dolist (orig (seq-layers source))
+        (seq-add! new-model (copy-network orig))))
+    ;; 非容器层：复制权重、偏置、运行统计量
     (unless (or (typep source 'sequential)
                 (typep source 'residual)
                 (typep source 'transformer-block))
@@ -337,25 +369,20 @@
                        "b-q" "b-k" "b-v" "b-o"
                        "weight-ih" "weight-hh"
                        "bias-ih" "bias-hh"
-                       "wih" "whh" "bih"))
+                       "wih" "whh" "bih"
+                       ;; embedding 的 weight
+                       "weight"))
         (when (slot-exists-p-by-name source pname)
-          (let ((src-val
-                  (find-slot-value source pname)))
+          (let ((src-val (find-slot-value source pname)))
             (when (and src-val (vt-p src-val))
-              (set-slot-value-by-name
-               new-model pname
-               (vt-copy src-val)))))))
+              (set-slot-value-by-name new-model pname (vt-copy src-val)))))))
+    ;; BatchNorm 额外复制 running-mean / running-var
     (when (typep source 'batch-norm)
-      (dolist (stat-name '("running-mean" "running-var"))
-        (when (slot-exists-p-by-name
-               source stat-name)
-          (let ((src-val
-                  (find-slot-value
-                   source stat-name)))
+      (dolist (stat '("running-mean" "running-var"))
+        (when (slot-exists-p-by-name source stat)
+          (let ((src-val (find-slot-value source stat)))
             (when (and src-val (vt-p src-val))
-              (set-slot-value-by-name
-               new-model stat-name
-               (vt-copy src-val)))))))
+              (set-slot-value-by-name new-model stat (vt-copy src-val)))))))
     new-model))
 
 (defun tensor-top-k (x k &key (axis -1))
@@ -432,22 +459,20 @@
       out-shape))))
 
 (defgeneric zero-grad! (component)
-  (:documentation "递归清零梯度.")
+  (:documentation "将组件及其所有子层中的梯度张量清零（置为 NIL）")
   (:method ((component null)) nil)
   (:method ((component layer))
-    (let ((class (class-of component)))
-      (dolist (slot (c2mop:class-slots class))
-        (let ((name (c2mop:slot-definition-name slot)))
-          (when (and (slot-boundp component name)
-                     (let ((sname (symbol-name name)))
-                       (or (and (> (length sname) 0)
-                                (char= (char sname 0)
-                                       #\d))
-                           (search "grad" sname))))
-            (let ((val (slot-value component name)))
-              (when (vt-p val)
-                (setf (slot-value component name)
-                      nil))))))))
+     (let ((class (class-of component)))
+    (dolist (slot (c2mop:class-slots class))
+      (let ((name (c2mop:slot-definition-name slot)))
+        (when (and (slot-boundp component name)
+                   (let ((sname (symbol-name name)))
+                     (or (and (> (length sname) 0)
+                              (char= (char sname 0) #\d))
+                         (search "grad" sname))))
+          (let ((val (slot-value component name)))
+            (when (vt-p val)
+              (setf (slot-value component name) nil))))))))
   (:method ((component sequential))
     (dolist (layer (seq-layers component))
       (zero-grad! layer)))
@@ -459,6 +484,8 @@
     (zero-grad! (tb-ffn2 component))
     (zero-grad! (tb-ln1 component))
     (zero-grad! (tb-ln2 component))))
+
+
 
 (defun clear-all-gradients! (model)
   "zero-grad! 的别名."

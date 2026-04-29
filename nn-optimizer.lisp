@@ -35,32 +35,24 @@
     (loop for p in param-list
           for (gname . grad) in grad-list
           for idx upfrom 0
-	  for owner = (first p)
+          for owner = (first p)
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
           when (and param grad)
-            do (let* ((key (list owner name idx))
+            do (let* ((base-key (list owner name idx))
                       (g (clip-gradient grad clip))
-                      (g-reg (if (> wd 0.0d0)
-				 (vt-+ g (vt-scale param wd))
-				 g)))
-		 (if (> mu 0.0d0)
-                     (let* ((vel (gethash key registry
-					  (vt-zeros (vt-shape param))))
-                            (new-vel (vt-+ (vt-scale vel mu)
-                                           g-reg)))
-                       (setf (gethash key registry) new-vel)
-                       (let ((upd (if (sgd-nesterov-p opt)
-                                      (vt-+ g-reg
-                                            (vt-scale new-vel mu))
-                                      new-vel)))
-			 (funcall setter
-                                  (vt-- param
-					(vt-scale upd lr)))))
-                     (funcall setter
-                              (vt-- param
-                                    (vt-scale g-reg lr))))))))
+                      (g-reg (if (> wd 0.0d0) 
+                                 (vt-+ g (vt-scale param wd))
+                                 g))
+                      (buf (gethash base-key registry 
+                                    (vt-zeros (vt-shape param))))
+                      (new-buf (vt-+ (vt-scale buf mu) g-reg)))
+                 (setf (gethash base-key registry) new-buf)
+                 (let ((update (if (sgd-nesterov-p opt)
+                                   (vt-+ g-reg (vt-scale new-buf mu))
+                                   new-buf)))
+                   (funcall setter (vt-- param (vt-scale update lr))))))))
 
 (defclass adam (optimizer)
   ((beta1 :initarg :beta1

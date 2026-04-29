@@ -216,28 +216,27 @@
     (setf (scheduler-last-lr s) (optimizer-lr optimizer))
     s))
 
-(defmethod scheduler-step! ((s warmup-cosine-lr)
-                            &optional metric)
+(defmethod scheduler-step! ((s warmup-cosine-lr) &optional metric)
   (declare (ignore metric))
   (incf (scheduler-step-count s))
   (let* ((step (scheduler-step-count s))
-         (warmup (warmup-warmup-steps s))
+         (warmup (or (warmup-warmup-steps s) 0))   ; 保证有整数
          (total (warmup-total-steps s))
          (base (warmup-base-lr s))
          (min-lr (warmup-min-lr s))
          (new-lr
            (cond
-             ;; 线性 warmup
-             ((< step warmup)
+             ;; 阶段1: warmup（仅在 warmup > 0 且 step < warmup 时）
+             ((and (> warmup 0) (< step warmup))
               (* base (/ step warmup 1.0d0)))
-             ;; Cosine decay
-             ((<= step total)
+             ;; 阶段2: Cosine decay（需要 total > warmup）
+             ((and (> total warmup) (<= step total))
               (+ min-lr
                  (* 0.5d0 (- base min-lr)
                     (+ 1.0d0
                        (cos (/ (* pi (- step warmup))
                                (- total warmup)))))))
-             ;; 训练结束保底
+             ;; 阶段3: 保底（训练已结束或无效阶段）
              (t min-lr))))
     (setf (optimizer-lr (scheduler-optimizer s)) new-lr)
     (setf (scheduler-last-lr s) new-lr)))

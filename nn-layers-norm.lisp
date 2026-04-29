@@ -113,7 +113,6 @@
          (eps (bn-eps l))
          (shape (vt-shape input))
          (batch-size (first shape)))
-    ;; 延迟初始化
     (unless (bn-gamma l)
       (setf (bn-gamma l) (vt-ones (list nf)))
       (setf (bn-beta l) (vt-zeros (list nf)))
@@ -122,47 +121,29 @@
     (setf (bn-batch-size l) batch-size)
     (setf (bn-input-cache l) input)
     (if (training-p l)
-        ;; 训练模式
-        (let* ((mean
-                 (vt-mean input :axis 0 :keepdims nil))
+        (let* ((mean (vt-mean input :axis 0 :keepdims nil))
                (diff (vt-- input mean))
-               (var-biased
-                 (vt-mean (vt-square diff) :axis 0))
-               (std-inv
-                 (vt-std-inv-from-var var-biased eps))
-               (xhat (vt-* diff std-inv))
-               (n-1 (1- batch-size))
-               (n-val batch-size)
-               (var-unbiased
-                 (vt-scale var-biased (/ n-val n-1))))
+               (var-biased (vt-mean (vt-square diff) :axis 0))   ; 有偏方差
+               (std-inv (vt-std-inv-from-var var-biased eps))
+               (xhat (vt-* diff std-inv)))
           (setf (bn-xhat-cache l) xhat)
           (setf (bn-std-inv-cache l) std-inv)
-          ;; 更新运行统计量
+          ;; 更新 running-var 使用有偏方差（与 PyTorch 一致）
           (let ((m (bn-momentum l)))
             (setf (bn-running-mean l)
-                  (vt-+
-                   (vt-scale (bn-running-mean l)
-                             (- 1.0d0 m))
-                   (vt-scale mean m)))
+		  (vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m))
+                        (vt-scale mean m)))
             (setf (bn-running-var l)
-                  (vt-+
-                   (vt-scale (bn-running-var l)
-                             (- 1.0d0 m))
-                   (vt-scale var-unbiased m))))
+		  (vt-+ (vt-scale (bn-running-var l) (- 1.0d0 m))
+                        (vt-scale var-biased m))))
           (if (bn-affine-p l)
-              (vt-+ (vt-* (bn-gamma l) xhat)
-                    (bn-beta l))
+              (vt-+ (vt-* (bn-gamma l) xhat) (bn-beta l))
               xhat))
-        ;; 推理模式
-        (let* ((std-inv
-                 (vt-std-inv-from-var
-                  (bn-running-var l) eps))
-               (xhat
-                 (vt-* (vt-- input (bn-running-mean l))
-                       std-inv)))
+        ;; 推理模式保持不变
+        (let* ((std-inv (vt-std-inv-from-var (bn-running-var l) eps))
+               (xhat (vt-* (vt-- input (bn-running-mean l)) std-inv)))
           (if (bn-affine-p l)
-              (vt-+ (vt-* (bn-gamma l) xhat)
-                    (bn-beta l))
+              (vt-+ (vt-* (bn-gamma l) xhat) (bn-beta l))
               xhat)))))
 
 (defmethod backward ((l batch-norm) grad-output)

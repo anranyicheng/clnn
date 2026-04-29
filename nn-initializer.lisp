@@ -65,58 +65,47 @@
 (defun make-orthogonal-init (&key gain)
   (make-instance 'orthogonal-init :gain (or gain 1.0d0)))
 
-(defmethod init-weight ((init orthogonal-init) shape
-                        &key fan-in fan-out)
-  "正交初始化: 在 rows x cols 上直接 Gram-Schmidt."
+(defmethod init-weight ((init orthogonal-init) shape &key fan-in fan-out)
+  "生成一个行数为 ROWS、列数为 COLS 的近似正交矩阵，并乘以增益 GAIN。"
   (declare (ignore fan-in fan-out))
   (let* ((rows (first shape))
          (cols (second shape))
+         ;; 仅正交化前 MIN(ROWS, COLS) 列，以获得尽可能多的正交方向
          (num-orth (min rows cols))
          (gain (orth-gain init))
-         (flat-size (* rows cols))
-         (raw-data (make-array flat-size
-                               :element-type 'double-float)))
-    ;; 填充随机正态数据
-    (dotimes (i flat-size)
-      (setf (aref raw-data i) (clvt::get-random-normal)))
-    (let ((q (make-array (list rows cols)
-                         :element-type 'double-float)))
-      ;; 将 raw-data 写入 q
-      (dotimes (i flat-size)
-        (setf (row-major-aref q i) (aref raw-data i)))
-      ;; Gram-Schmidt: 对前 num-orth 列正交化
-      (dotimes (j num-orth)
-        (let ((v (make-array rows
-                             :element-type 'double-float)))
-          ;; 提取第 j 列
-          (dotimes (i rows)
-            (setf (aref v i) (aref q i j)))
-          ;; 减去在之前所有列上的投影
-          (dotimes (k j)
-            (let ((dot-prod 0.0d0))
-              (dotimes (i rows)
-                (incf dot-prod
-                      (* (aref v i) (aref q i k))))
-              (dotimes (i rows)
-                (decf (aref v i)
-                      (* dot-prod (aref q i k))))))
-          ;; 归一化
-          (let ((norm 0.0d0))
+         ;; 分配矩阵并填入标准正态随机数
+         (q (make-array (list rows cols) :element-type 'double-float)))
+    (dotimes (i (* rows cols))
+      (setf (row-major-aref q i) (clvt::get-random-normal)))
+    ;; Gram–Schmidt 正交化
+    (dotimes (j num-orth)
+      (let ((v (make-array rows :element-type 'double-float
+				:initial-element 0.0d0)))
+        ;; 提取当前列
+        (dotimes (i rows) (setf (aref v i) (aref q i j)))
+        ;; 减去在前 j 列上的投影
+        (dotimes (k j)
+          (let ((dot-prod 0.0d0))
             (dotimes (i rows)
-              (incf norm (* (aref v i) (aref v i))))
-            (setf norm (sqrt norm))
-            (when (> norm 1.0d-10)
+              (incf dot-prod (* (aref v i) (aref q i k))))
+            (dotimes (i rows)
+              (decf (aref v i) (* dot-prod (aref q i k))))))
+        ;; 归一化（防止零除）
+        (let* ((norm-sq (loop for i below rows
+			      sum
+			      (* (aref v i) (aref v i))))
+               (norm (sqrt norm-sq)))
+          (when (> norm 1.0d-12)
+            (let ((inv-norm (/ 1.0d0 norm)))
               (dotimes (i rows)
-                (setf (aref v i)
-                      (/ (aref v i) norm)))))
-          ;; 写回第 j 列
-          (dotimes (i rows)
-            (setf (aref q i j) (aref v i)))))
-      ;; 直接复用底层数组转换为 vt，避免 list/coerce 开销
-      (vt-scale
-       (vt-reshape
-        (vt-from-sequence raw-data) shape)
-       gain))))
+                (setf (aref v i) (* (aref v i) inv-norm))))))
+        ;; 写回正交化后的列
+        (dotimes (i rows)
+          (setf (aref q i j) (aref v i)))))
+    ;; 转换为 VT 并应用增益
+    (vt-scale (vt-from-array q) gain)))
+
+
 
 (defclass zeros-init (initializer) ())
 
