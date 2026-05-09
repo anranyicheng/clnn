@@ -345,23 +345,22 @@
             ((:hard-tanh hard-tanh)     (vt-hard-tanh input))
             ((:hard-sigmoid hard-sigmoid) (vt-hard-sigmoid input))
             ((:linear :none)             input)
-            ((:softmax softmax)         (vt-softmax input))
-            ((:log-softmax log-softmax) (vt-log-softmax input)))))
+            (:softmax
+             (setf (act-z-cache l) input)
+             (vt-softmax input))
+            (:log-softmax
+             (setf (act-z-cache l) input)
+             (vt-log-softmax input)))))
     ;; 根据激活类型，缓存反向传播所需的值
     (case (activation-kind l)
-      ;; 需要原始输入 z 的激活
       ((:relu :leaky-relu :gelu :swish :mish :softplus :hard-tanh :hard-sigmoid)
        (setf (act-z-cache l) input)
        (setf (act-a-cache l) nil))
-      ;; 需要激活输出 a 的激活
       ((:sigmoid :tanh)
        (setf (act-a-cache l) out)
        (setf (act-z-cache l) nil))
-      ;; softmax / log-softmax 的反向传播需要特殊处理，这里暂时仍用 a-cache (实际需要原始输入 z，但 softmax 导数是基于 s 的)
       ((:softmax :log-softmax)
-       (setf (act-a-cache l) out)
-       (setf (act-z-cache l) nil))
-      ;; linear
+       (setf (act-a-cache l) out))
       (t (setf (act-z-cache l) nil)
          (setf (act-a-cache l) nil)))
     out))
@@ -394,14 +393,19 @@
       ((:hard-sigmoid hard-sigmoid)
        (vt-* grad-output (vt-hard-sigmoid-derivative (act-z-cache l))))
       ((:linear :none) grad-output)
-      ((:softmax softmax)
-       ;; 对于 softmax，导数需要更复杂的计算，这里提供一个简化版（正确版本需要原始输入 z）
-       (vt-* grad-output (vt-softmax-derivative (act-a-cache l))))
-      ((:log-softmax log-softmax)
-       (let* ((s (vt-softmax (act-z-cache l)))   ; 注意：实际上 log-softmax 的输入应为未归一化 logits，但此处我们假设输入是 logits？
-              (sum-dy (vt-sum grad-output :axis -1 :keepdims t)))
-         (vt-- grad-output (vt-* s sum-dy)))))))
-
+      (:softmax
+       (let* ((y (act-a-cache l)) 
+              (gy grad-output)
+              (sum-gy-y (vt-sum (vt-* gy y) :axis -1 :keepdims t))
+              (gz (vt-* y (vt-- gy sum-gy-y))))
+         gz))
+      (:log-softmax
+       (let* ((z (act-z-cache l)) 
+              (s (vt-softmax z))  
+              (gy grad-output)
+              (sum-gy (vt-sum gy :axis -1 :keepdims t))
+              (gz (vt-- gy (vt-* s sum-gy))))
+         gz)))))
 
 (defclass flatten (layer)
   ((start-dim :initarg :start-dim

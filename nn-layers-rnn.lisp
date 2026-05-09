@@ -204,26 +204,24 @@
          (all-gates '()) (all-c '())
          (all-h '()) (all-x '()))
     (dotimes (i seq-len)
-      (let* ((x-t (vt-slice input :all i :all))
+      (let* ((x-t (vt-slice input (list :all) (list i) (list :all))) 
              (gates
                (vt-+ (vt-+
                       (vt-matmul x-t (vt-transpose wih))
                       (vt-matmul h (vt-transpose whh)))
                      (vt-+ bih bhh)))
              (i-gate (vt-sigmoid
-                      (vt-slice gates :all (list 0 hs))))
+                      (vt-slice gates (list :all) `(0 ,hs))))     
              (f-gate (vt-sigmoid
-                      (vt-slice gates :all `(,hs ,(* 2 hs)))))
+                      (vt-slice gates (list :all) `(,hs ,(* 2 hs)))))
              (g-gate (vt-tanh
-                      (vt-slice gates
-                                :all `(,(* 2 hs) ,(* 3 hs)))))
+                      (vt-slice gates (list :all) `(,(* 2 hs) ,(* 3 hs)))))
              (o-gate (vt-sigmoid
-                      (vt-slice gates
-                                :all `(,(* 3 hs) ,(* 4 hs)))))
+                      (vt-slice gates (list :all) `(,(* 3 hs) ,(* 4 hs)))))
              (c-new (vt-+ (vt-* f-gate c)
                           (vt-* i-gate g-gate)))
              (h-new (vt-* o-gate (vt-tanh c-new))))
-        (setf (vt-slice output :all i :all) h-new)
+        (setf (vt-slice output (list :all) (list i) (list :all)) h-new)
         (setf h h-new)
         (setf c c-new)
         (push (list (vt-copy i-gate) (vt-copy f-gate)
@@ -272,7 +270,7 @@
                          (nth (1- idx) all-c)))
              (c-cur (nth idx all-c))
              (x-t (nth idx all-x))
-             (dh (vt-+ (vt-slice grad-output :all idx :all)
+             (dh (vt-+ (vt-slice grad-output (list :all) (list idx) (list :all))
                        dh-next))
              (tanh-c (vt-tanh c-cur))
              (dtanh-c (vt-- 1.0d0 (vt-* tanh-c tanh-c)))
@@ -287,7 +285,6 @@
              (do-g (vt-* dh tanh-c
                          (vt-* o-gate (vt-- 1.0d0 o-gate))))
              (d-gates (vt-concatenate -1 di df dg do-g)))
-        ;; 时间步内累加
         (setf dwih-acc
               (vt-+ dwih-acc
                     (vt-matmul (vt-transpose d-gates) x-t)))
@@ -302,7 +299,7 @@
         (setf dbhh-acc
               (vt-+ dbhh-acc (vt-sum d-gates :axis 0)))
         (setf dh-next (vt-matmul d-gates whh))
-        (setf (vt-slice grad-input :all idx :all)
+        (setf (vt-slice grad-input (list :all) (list idx) (list :all)) 
               (vt-matmul d-gates wih))
         (setf dc-next (vt-* dc f-gate))))
     (setf (lstm-dweight-ih l)
@@ -407,28 +404,28 @@
          (bih (gru-bias-ih l))
          (bhh (gru-bias-hh l))
          (w-in (vt-slice wih
-                         :all `(,(* 2 hs) ,(* 3 hs))))
+                         (list :all) `(,(* 2 hs) ,(* 3 hs))))
          (b-in (vt-slice bih
-                         :all `(,(* 2 hs) ,(* 3 hs))))
+                         (list :all) `(,(* 2 hs) ,(* 3 hs))))
          (w-hn (vt-slice whh
-                         :all `(,(* 2 hs) ,(* 3 hs))))
+                         (list :all) `(,(* 2 hs) ,(* 3 hs))))
          (b-hn (vt-slice bhh
-                         :all `(,(* 2 hs) ,(* 3 hs))))
+                         (list :all) `(,(* 2 hs) ,(* 3 hs))))
          (h (vt-zeros (list batch hs)))
          (output (vt-zeros (list batch seq-len hs)))
          (all-r '()) (all-z '()) (all-n '())
          (all-h '()) (all-x '()) (all-hn-gate '()))
     (dotimes (i seq-len)
-      (let* ((x-t (vt-slice input :all i :all))
+      (let* ((x-t (vt-slice input (list :all) i (list :all)))
              (gates
                (vt-+ (vt-+
                       (vt-matmul x-t (vt-transpose wih))
                       (vt-matmul h (vt-transpose whh)))
                      (vt-+ bih bhh)))
              (r (vt-sigmoid
-                 (vt-slice gates :all (list 0 hs))))
+                 (vt-slice gates (list :all) (list 0 hs))))
              (z (vt-sigmoid
-                 (vt-slice gates :all `(,hs ,(* 2 hs)))))
+                 (vt-slice gates (list :all) `(,hs ,(* 2 hs)))))
              (hn-linear
                (vt-+ (vt-matmul h (vt-transpose w-hn))
                      b-hn))
@@ -440,7 +437,7 @@
                        b-in)))
              (h-new (vt-+ (vt-* (vt-- 1.0d0 z) n)
                           (vt-* z h))))
-        (setf (vt-slice output :all i :all) h-new)
+        (setf (vt-slice output (list :all) i (list :all)) h-new)
         (setf h h-new)
         (push (vt-copy r) all-r)
         (push (vt-copy z) all-z)
@@ -472,8 +469,8 @@
          (is (gru-input-size l))
          (wih (gru-weight-ih l))
          (whh (gru-weight-hh l))
-         (w-in (vt-slice wih :all `(,(* 2 hs) ,(* 3 hs))))
-         (w-hn (vt-slice whh :all `(,(* 2 hs) ,(* 3 hs))))
+         (w-in (vt-slice wih (list :all) `(,(* 2 hs) ,(* 3 hs))))
+         (w-hn (vt-slice whh (list :all) `(,(* 2 hs) ,(* 3 hs))))
          (dwih-acc (vt-zeros (list (* 3 hs) is)))
          (dwhh-acc (vt-zeros (list (* 3 hs) hs)))
          (dbih-acc (vt-zeros (list (* 3 hs))))
@@ -491,7 +488,7 @@
                          zero-h
                          (nth (1- idx) all-h)))
              (x-t (nth idx all-x))
-             (dh (vt-+ (vt-slice grad-output :all idx :all)
+             (dh (vt-+ (vt-slice grad-output (list :all) idx (list :all))
                        dh-next))
              (dz (vt-* dh (vt-- h-prev n-t)))
              (dn (vt-* dh (vt-- 1.0d0 z-t)))
@@ -506,43 +503,43 @@
                                          dr-pre dz-pre)))
         ;; 1. Wih
         (let ((full-dw (vt-zeros (list (* 3 hs) is))))
-          (setf (vt-slice full-dw :all `(0 ,(* 2 hs)) :all)
+          (setf (vt-slice full-dw (list :all) `(0 ,(* 2 hs)) (list :all))
                 (vt-matmul (vt-transpose d-gates-rz) x-t))
           (setf (vt-slice full-dw
-                          :all `(,(* 2 hs) ,(* 3 hs)) :all)
+                          (list :all) `(,(* 2 hs) ,(* 3 hs)) (list :all))
                 (vt-matmul (vt-transpose dn-pre) x-t))
           (setf dwih-acc (vt-+ dwih-acc full-dw)))
         ;; 2. Whh
         (let ((full-dwh (vt-zeros (list (* 3 hs) hs))))
-          (setf (vt-slice full-dwh :all `(0 ,(* 2 hs)) :all)
+          (setf (vt-slice full-dwh (list :all) `(0 ,(* 2 hs)) (list :all))
                 (vt-matmul (vt-transpose d-gates-rz) h-prev))
           (setf (vt-slice full-dwh
-                          :all `(,(* 2 hs) ,(* 3 hs)) :all)
+                          (list :all) `(,(* 2 hs) ,(* 3 hs)) (list :all))
                 (vt-matmul (vt-transpose dhn-linear) h-prev))
           (setf dwhh-acc (vt-+ dwhh-acc full-dwh)))
         ;; 3. bih
         (let ((full-db (vt-zeros (list (* 3 hs)))))
-          (setf (vt-slice full-db :all `(0 ,(* 2 hs)))
+          (setf (vt-slice full-db (list :all) `(0 ,(* 2 hs)))
                 (vt-sum d-gates-rz :axis 0))
           (setf (vt-slice full-db
-                          :all `(,(* 2 hs) ,(* 3 hs)))
+                          (list :all) `(,(* 2 hs) ,(* 3 hs)))
                 (vt-sum dn-pre :axis 0))
           (setf dbih-acc (vt-+ dbih-acc full-db)))
         ;; 4. bhh
         (let ((full-dbh (vt-zeros (list (* 3 hs)))))
-          (setf (vt-slice full-dbh :all `(0 ,(* 2 hs)))
+          (setf (vt-slice full-dbh (list :all) `(0 ,(* 2 hs)))
                 (vt-sum d-gates-rz :axis 0))
           (setf (vt-slice full-dbh
-                          :all `(,(* 2 hs) ,(* 3 hs)))
+                          (list :all) `(,(* 2 hs) ,(* 3 hs)))
                 (vt-sum dhn-linear :axis 0))
           (setf dbhh-acc (vt-+ dbhh-acc full-dbh)))
         ;; 5. dX
-        (let* ((wih-rz (vt-slice wih :all `(0 ,(* 2 hs))))
+        (let* ((wih-rz (vt-slice wih (list :all) `(0 ,(* 2 hs))))
                (dx-t (vt-+ (vt-matmul d-gates-rz wih-rz)
                            (vt-matmul dn-pre w-in))))
-          (setf (vt-slice grad-input :all idx :all) dx-t))
+          (setf (vt-slice grad-input (list :all) idx (list :all)) dx-t))
         ;; 6. dh_prev
-        (let* ((whh-rz (vt-slice whh :all `(0 ,(* 2 hs))))
+        (let* ((whh-rz (vt-slice whh (list :all) `(0 ,(* 2 hs))))
                (dh-from-rz (vt-matmul d-gates-rz whh-rz))
                (dh-from-n (vt-matmul dhn-linear w-hn))
                (dh-from-z (vt-* z-t dh)))

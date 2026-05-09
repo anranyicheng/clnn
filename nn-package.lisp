@@ -30,7 +30,7 @@
        :vt-to-array :vt-from-array
        :vt-flatten-sequence :vt-from-sequence :vt-to-list
    :vt-inv :vt-det :vt-solve :vt-trace
-   :vt-take
+   :vt-take :vt-eye
    :vt-copy-into :vt-flatten)
   (:export
    ;; ============= 协议 =============

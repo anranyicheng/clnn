@@ -76,48 +76,61 @@
 (defmethod compute-loss ((l ce-loss) predicted target)
   (let* ((eps (ce-eps l))
          (smoothing (ce-label-smoothing l))
+         (shape (vt-shape predicted))
+         (batch (first shape))
+         (n-classes (second shape))
+         ;; 数值稳定性裁剪
          (pred-clipped (vt-clip predicted eps 1.0d0))
-         ;; 提取真实类别对应的 log 概率 (shape: batch)
-         (target-logprob (vt-take pred-clipped target :axis 1))
-         ;; 负对数似然部分 (不乘权重的原始 NLL)
-         (nll (vt-- target-logprob))                      ; nll = -log_prob_target
-         ;; 平滑部分：- smoothing * mean(log_prob)
-         (smooth-term
-           (when (> smoothing 0.0d0)
-             (vt-scale (vt-mean pred-clipped :axis 1) (- smoothing)))))
-    ;; 每个样本的真实损失 = (1-smoothing)*nll + smooth-term
-    (let ((per-sample (if smooth-term
-                          (vt-+ (vt-scale nll (- 1.0d0 smoothing))
-                                smooth-term)
-                          nll)))
-      (ecase (loss-reduction l)
-        (:mean (vt-mean per-sample))
-        (:sum  (vt-sum per-sample))
-        (:none per-sample)))))
+         ;; 构造 one-hot 目标 (batch, n-classes)
+         (eye (vt-eye n-classes :value 1.0d0 :type 'double-float))
+         (target-flat (if (= (length (vt-shape target)) 1)
+                          target
+                          (vt-flatten target)))   ; 确保是一维
+         (one-hot (vt-reshape (vt-take eye target-flat :axis 0)
+                              (list batch n-classes)))
+         ;; 标签平滑处理
+         (target-smoothed
+           (if (> smoothing 0.0d0)
+               (vt-+ (vt-scale one-hot (- 1.0d0 smoothing))
+                     (vt-scale (vt-ones (list batch n-classes))
+                               (/ smoothing n-classes 1.0d0)))
+               one-hot))
+         ;; 逐样本损失 = - sum(target_smoothed * log_pred, axis=-1)
+         (per-sample (vt-scale
+                      (vt-sum (vt-* target-smoothed pred-clipped)
+                              :axis -1)
+                      -1.0d0)))
+    (ecase (loss-reduction l)
+      (:mean (vt-mean per-sample))
+      (:sum  (vt-sum per-sample))
+      (:none per-sample))))
 
 (defmethod compute-loss-gradient ((l ce-loss) predicted target)
-  (let* ((batch (first (vt-shape predicted)))
-         (n-classes (second (vt-shape predicted)))
-         (smoothing (ce-label-smoothing l))
+  (let* ((smoothing (ce-label-smoothing l))
+         (shape (vt-shape predicted))
+         (batch (first shape))
+         (n-classes (second shape))
+         ;; 计算 softmax 概率（predicted 已经是 log-probs，故 exp 即可）
          (probs (vt-exp predicted))
-         (grad (vt-copy probs)))
-    (dotimes (i batch)
-      (let* ((label (vt-ref target i))
-             (old-val (vt-ref grad i label)))
-        (setf (vt-ref grad i label)
-              (- old-val 1.0d0))))
-    (when (> smoothing 0.0d0)
-      (let ((uniform (/ smoothing n-classes 1.0d0)))
-        (setf grad (vt-- grad uniform))
-        (dotimes (i batch)
-          (let ((label (coerce (vt-ref target i)
-			       'fixnum)))
-            (setf (vt-ref grad i label)
-                  (+ (vt-ref grad i label)
-                     smoothing))))))
+         ;; 构造 one-hot
+         (eye (vt-eye n-classes :value 1.0d0 :type 'double-float))
+         (target-flat (if (= (length (vt-shape target)) 1)
+                          target
+                          (vt-flatten target)))
+         (one-hot (vt-reshape (vt-take eye target-flat :axis 0)
+                              (list batch n-classes)))
+         ;; 标签平滑后的目标
+         (target-smoothed
+           (if (> smoothing 0.0d0)
+               (vt-+ (vt-scale one-hot (- 1.0d0 smoothing))
+                     (vt-scale (vt-ones (list batch n-classes))
+                               (/ smoothing n-classes 1.0d0)))
+               one-hot))
+         ;; 梯度 = probs - target_smoothed
+         (grad (vt-- probs target-smoothed)))
+    ;; 根据 reduction 缩放梯度
     (ecase (loss-reduction l)
-      (:mean (vt-scale grad
-		       (/ 1.0d0 batch)))
+      (:mean (vt-scale grad (/ 1.0d0 batch)))
       (:sum grad)
       (:none grad))))
 
