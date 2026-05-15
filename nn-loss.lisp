@@ -231,7 +231,7 @@
                                1.0d-8)))
          (cos-sim (vt-mean
                    (vt-/ dot (vt-* norm-p norm-t)))))
-    (- 1.0d0 cos-sim)))
+    (vt-- 1.0d0 cos-sim)))
 
 (defmethod compute-loss-gradient
     ((l cosine-similarity-loss) predicted target)

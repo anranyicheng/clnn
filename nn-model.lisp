@@ -141,7 +141,7 @@
       (let ((tensor (cdr g)))
         (when tensor
           (incf sq-sum
-                (vt-sum (vt-square tensor))))))
+               (vt-item (vt-sum (vt-square tensor)))))))
     (sqrt sq-sum)))
 
 

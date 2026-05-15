@@ -240,18 +240,15 @@
     (build-model (make-instance 'layer) x)
     (dolist (l layers) (build-model l x))
     (dotimes (i 100)
-      ;; 【修正】：手动遍历清零梯度
       (dolist (l layers) (zero-grad! l))      
       (let ((out x))
         (dolist (l layers)
 	  (setf out (forward l out)))
 	(let* ((diff (vt-- out x))
-               (loss (coerce (vt-mean (vt-square diff)) 'double-float))
+               (loss (vt-item (vt-mean (vt-square diff))))
                (grad (vt-scale diff (/ 2.0d0 (* 8 32)))))
-          ;; 【修正】：手动倒序链式反向传播
           (dolist (l (reverse layers))
             (setf grad (backward l grad)))
-          ;; 【修正】：手动遍历更新参数
           (dolist (l layers)
 	    (model-update! l opt))          
           (when (zerop (mod i 10))
@@ -265,20 +262,17 @@
          (hidden-dim 16)
          (x (vt-random-normal (list batch seq-len feat)))
          (lstm (make-lstm feat hidden-dim))
-         ;; proj 要把 hidden_dim(16) 映射回 feat(8)
          (proj (make-dense feat :activation :tanh))
          (layers (list proj lstm))
          (opt (make-adam :lr 0.01d0)))
     (build-model lstm)
-    ;; 【修正】：用正确的 LSTM 输出形状来欺骗 proj 进行初始化
-    ;; 这样 proj 才会生成 (16 -> 8) 的权重矩阵
     (build-model proj (vt-zeros (list batch seq-len hidden-dim)))
     (dotimes (i 100)
       (dolist (l layers)
 	(zero-grad! l))
       (let* ((h (forward lstm x))
              (out (forward proj h))
-             (loss (coerce (vt-mean (vt-square out)) 'double-float))
+             (loss (vt-item (vt-mean (vt-square out))))
              (grad (vt-scale out (/ 2.0d0 (* batch seq-len feat)))))
         (setf grad (backward proj grad))
         (setf grad (backward lstm grad))
@@ -306,27 +300,23 @@
          (mha (make-multi-head-attention dim 4 :use-bias nil))
          (layers (list emb ln mha))
          (opt (make-adam :lr 0.01d0)))    
-    ;; 【修正1】：MHA 的 build-model 必须喂一个包含 3 个张量的 List！
     (let ((dummy (vt-zeros (list batch seq-len dim))))
       (build-model mha (list dummy dummy dummy)))
     ;; 触发 embedding 初始化
     (forward emb token-ids)
     
     (dotimes (i 100)
-      ;; 【修正2】：手动遍历清零，绝对不能传 List 进去
       (dolist (l layers)
 	(zero-grad! l))
       
       (let* ((x (forward emb token-ids))
              (n (forward ln x))
-             ;; 【修正3】：MHA 的 forward 也必须传 (list Q K V)！自注意力就是传3个一样的
              (attn-out (forward mha (list n n n)))
-             (loss (coerce (vt-mean (vt-square attn-out)) 'double-float))
+             (loss (vt-item (vt-mean (vt-square attn-out))))
              (grad (vt-scale attn-out (/ 2.0d0 (* batch seq-len dim)))))
         (setf grad (backward mha grad))
         (setf grad (backward ln grad))
-        (setf grad (backward emb grad))        
-        ;; 【修正4】：手动遍历更新，不能传 List
+        (setf grad (backward emb grad)) 
         (dolist (l layers)
 	  (model-update! l opt))
         (when (zerop (mod i 10))
@@ -344,7 +334,7 @@
       (let* ((out (forward d x))
              (target (vt-ones (list 8)))
              (diff (vt-- out target))
-             (loss (coerce (vt-mean (vt-square diff)) 'double-float))
+             (loss (vt-item (vt-mean (vt-square diff))))
              (grad (vt-scale diff (/ 2.0d0 8))))
         (backward d grad)
         (model-update! d opt)
@@ -383,7 +373,7 @@
       (let* ((pooled (vt-mean features :axis 1)) 
              (logits (forward head pooled))
              ;; 假设目标是让所有 logit 逼近 0
-             (loss (coerce (vt-mean (vt-square logits)) 'double-float))
+             (loss (vt-item (vt-mean (vt-square logits))))
              (grad (vt-scale logits (/ 2.0d0 (* batch num-classes)))))
         (backward head grad)
         (model-update! head opt)
@@ -412,7 +402,7 @@
              (out2 (forward branch2 x))
              ;; 假设你实现了 vt-concat，沿最后一个维度拼接，变成 (3, 16)
              (concat-out (vt-concatenate -1 out1 out2))
-             (loss (coerce (vt-mean (vt-square concat-out)) 'double-float))
+             (loss (vt-item (vt-mean (vt-square concat-out))))
              ;; 梯度需要手动切分回去（假设实现了 vt-split）
              (grad (vt-scale concat-out (/ 2.0d0 (* 3 16))))
              (grads-list (vt-split grad 2 :axis -1))
@@ -432,7 +422,6 @@
 (defun test-inception-branch-concat-b ()
   (format t "~%=== [测试 10-b] 多分支并行计算与拼接 ===~%")
   (let* ((x (vt-random-normal (list 3 16)))
-         ;; 关键改动：定义一个非零目标，shape 必须和 concat-out 一致
          (target (vt-ones (list 3 16))) ;; 全 1 目标
          (branch1 (make-dense 8 :activation :tanh))
          (branch2 (make-dense 8 :activation :tanh))
@@ -447,10 +436,8 @@
       (let* ((out1 (forward branch1 x))
              (out2 (forward branch2 x))
              (concat-out (vt-concatenate -1 out1 out2))
-             ;; 关键改动：Loss = mean(square(预测 - 目标))
              (diff (vt-- concat-out target))
-             (loss (coerce (vt-mean (vt-square diff)) 'double-float))
-             ;; 关键改动：梯度从 diff 出发，而不是从 concat-out 出发
+             (loss (vt-item (vt-mean (vt-square diff))))
              (grad (vt-scale diff (/ 2.0d0 (* 3 16))))
              (grads-list (vt-split grad 2 :axis -1))
              (grad1 (first grads-list))
@@ -466,7 +453,7 @@
     (let* ((out1 (forward branch1 x))
            (out2 (forward branch2 x))
            (concat-out (vt-concatenate -1 out1 out2))
-           (mean-val (coerce (vt-mean concat-out) 'double-float)))
+           (mean-val (vt-item (vt-mean concat-out))))
       (format t "最终输出均值 (应接近 1.0): ~a~%" mean-val)
       (if (< (abs (- mean-val 1.0d0)) 0.1d0)
           (format t "[通过] DAG多分支计算与Concat反向传播正确!~%")
@@ -490,7 +477,7 @@
       (let* ((logits (forward classifier dummy-features))
              ;; 传入
              (loss-vt (forward ce-loss (list logits targets)))
-             (loss-val (coerce (vt-mean loss-vt) 'double-float))
+             (loss-val (vt-item (vt-mean loss-vt)))
              ;; CE 的 backward 传什么都没关系，它内部会忽略，直接返回对 logits 的梯度
              (grad (backward ce-loss (list loss-val))))
         (backward classifier grad)
@@ -552,10 +539,7 @@
           ;; 数学推导：Loss = mean(0.5 * diff^2)
           ;; 对 merged 的梯度 = diff * (1/N)
           ;; 这样做可以避开 vt-mul 和 vt-mean 是否有反向图的干扰
-          (let* ((grad-merged (vt-scale diff inv-n))                 
-                 ;; 【高光时刻】
-                 ;; merged 是 concat 来的，所以 grad-merged 必须用 split 拆回去！
-                 ;; 形状从 (4, 12, 16) 拆成 3 个 (4, 4, 16)
+          (let* ((grad-merged (vt-scale diff inv-n))   
                  (grad-parts (vt-split grad-merged 3 :axis -2))
                  (grad1 (first grad-parts))
                  (grad2 (second grad-parts))
@@ -599,11 +583,6 @@
            (attn-dense (make-dense dim :activation :relu :use-bias t))
            (ffn-dense1 (make-dense hidden-dim :activation :relu :use-bias t))
            (ffn-dense2 (make-dense dim :use-bias t))
-           
-           ;; ==============================================
-           ;; 【终极修复】为每一层创建独立的优化器实例！
-           ;; 彻底绕过 Adam 内部哈希表 Key 冲突的底层 Bug
-           ;; ==============================================
            (opt-ln1 (make-adam :lr 0.01d0))
            (opt-ln2 (make-adam :lr 0.01d0))
            (opt-attn (make-adam :lr 0.01d0))
@@ -636,7 +615,7 @@
                (res2 (vt-+ res1 ffn-out))
                
                (diff (vt-- res2 target))
-               (scalar-loss (coerce (vt-mean (vt-* diff diff)) 'double-float)))
+               (scalar-loss (vt-item (vt-mean (vt-* diff diff)))))
           
           (let* ((N (reduce #'* (vt-shape diff)))
                  (inv-n (/ 2.0d0 (coerce N 'double-float)))
@@ -653,10 +632,6 @@
                  
                  (grad-attn-out (backward attn-dense grad-norm1)))
             (backward ln1 grad-attn-out))
-          
-          ;; ==============================================
-          ;; 分别使用专属优化器更新参数
-          ;; ==============================================
           (model-update! ln1 opt-ln1)
           (model-update! ln2 opt-ln2)
           (model-update! attn-dense opt-attn)
@@ -692,11 +667,6 @@
                                    :activation :relu
                                    :use-bias t))
            (ffn-dense2 (make-dense dim :use-bias t))
-           
-           ;; ==============================================
-           ;; 【高光时刻】只需要一个 Adam 实例！
-           ;; 底层的 layer-id 机制会自动帮它隔离状态
-           ;; ==============================================
            (opt (make-adam :lr 0.01d0))
            (layers (list ln1 ln2 attn-dense
                          ffn-dense1 ffn-dense2)))
@@ -710,8 +680,8 @@
                    (vt-zeros (list batch seq-len hidden-dim)))
       
       (dotimes (epoch 100)
-        ;; 优雅：一行代码清零所有层的梯度
-        (dolist (l layers) (zero-grad! l))
+        (dolist (l layers)
+	  (zero-grad! l))
         
         (let* ((target (vt-zeros (list batch seq-len dim)))
                
@@ -725,9 +695,8 @@
                (res2 (vt-+ res1 ffn-out))
                
                (diff (vt-- res2 target))
-               (scalar-loss (coerce
-                             (vt-mean (vt-* diff diff))
-                             'double-float)))
+               (scalar-loss (vt-item
+                             (vt-mean (vt-* diff diff)))))
           
           ;; 3. 手动残差反向分流
           (let* ((N (reduce #'* (vt-shape diff)))
@@ -744,13 +713,7 @@
                  (grad-norm1 (vt-+ grad-res1-a grad-res1-b))
                  
                  (grad-attn-out (backward attn-dense grad-norm1)))
-            ;; 修复了之前多出来的右括号
             (backward ln1 grad-attn-out))
-          
-          ;; ==============================================
-          ;; 【高光时刻】一行代码更新所有层！
-          ;; model-update! 会自动把各层的名字传给 opt
-          ;; ==============================================
           (dolist (l layers) (model-update! l opt))
           
           (when (zerop (mod epoch 10))

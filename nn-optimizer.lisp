@@ -3,7 +3,7 @@
 (defun clip-gradient (grad clip)
   "计算 L2 Norm 并裁剪梯度."
   (if (> clip 0.0d0)
-      (let ((gnorm (sqrt (vt-sum (vt-square grad)))))
+      (let ((gnorm (sqrt (vt-item (vt-sum (vt-square grad))))))
         (if (> gnorm clip)
             (vt-scale grad (/ clip gnorm))
             grad))

@@ -13,7 +13,7 @@
        :vt-transpose :vt-reshape :vt-squeeze :vt-split
        :vt-copy :vt-contiguous
        :vt-ref :vt-slice :vt-do-each :vt-map :vt-reduce
-       :vt-amax
+       :vt-amax :vt-item
    :vt-+ :vt-- :vt-* :vt-/ :vt-scale :vt-=
        :vt-matmul :vt-einsum :vt-dot :vt-outer
        :vt-sum :vt-mean :vt-std :vt-var
