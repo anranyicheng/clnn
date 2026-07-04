@@ -25,11 +25,11 @@
          (attn (vt-softmax masked-scores))
          (attn-dropped
 	   (if (and is-training (> (or dropout-rate 0.0d0) 0.0d0))
-               (let ((dr (or dropout-rate 0.0d0)))
                  (vt-map (lambda (x)
-			   (if (< (random 1.0d0) dr)
+			   (if (< (random 1.0d0) dropout-rate)
 			       0.0d0
-			       (/ x (- 1.0d0 dr)))) attn))
+			       (/ x (- 1.0d0 dropout-rate))))
+			 attn)
                attn))
          (output (vt-matmul attn-dropped v)))
     (values output attn-dropped)))

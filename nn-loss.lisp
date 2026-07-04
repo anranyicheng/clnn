@@ -82,7 +82,7 @@
          ;; 数值稳定性裁剪
          (pred-clipped (vt-clip predicted eps 1.0d0))
          ;; 构造 one-hot 目标 (batch, n-classes)
-         (eye (vt-eye n-classes :value 1.0d0 :type 'double-float))
+         (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
          (target-flat (if (= (length (vt-shape target)) 1)
                           target
                           (vt-flatten target)))   ; 确保是一维
@@ -113,7 +113,7 @@
          ;; 计算 softmax 概率（predicted 已经是 log-probs，故 exp 即可）
          (probs (vt-exp predicted))
          ;; 构造 one-hot
-         (eye (vt-eye n-classes :value 1.0d0 :type 'double-float))
+         (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
          (target-flat (if (= (length (vt-shape target)) 1)
                           target
                           (vt-flatten target)))

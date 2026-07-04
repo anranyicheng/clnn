@@ -14,6 +14,7 @@
 
 (defun ensure-diff (x &optional (requires-grad nil))
   "将普通 vt 包装为 diff-tensor，或原样返回."
+  (declare (ignorable requires-grad))
   (if (typep x 'diff-tensor) x (make-instance 'diff-tensor :data x)))
 
 ;; ===================================================================
