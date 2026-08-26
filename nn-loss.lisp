@@ -38,9 +38,11 @@
 (defmethod compute-loss ((l bce-loss) predicted target)
   (let* ((eps (bce-eps l))
          (p (vt-clip predicted eps (- 1.0d0 eps)))
-         (loss (vt-+ (vt-* (vt-- 0.0d0 target) (vt-log p))
-                     (vt-* (vt-- 1.0d0 target)
-                           (vt-log (vt-- 1.0d0 p))))))
+         (loss (vt-scale
+                (vt-+ (vt-* target (vt-log p))
+                      (vt-* (vt-- 1.0d0 target)
+                            (vt-log (vt-- 1.0d0 p))))
+                -1.0d0)))
     (ecase (loss-reduction l)
       (:mean (vt-mean loss))
       (:sum (vt-sum loss))
@@ -64,7 +66,7 @@
    (label-smoothing :initarg :label-smoothing
 		    :initform 0.0d0
 		    :accessor ce-label-smoothing))
-  (:documentation "多分类CE. PREDICTED: log-probs. TARGET: 整数"))
+  (:documentation "多分类CE (NLL+LogSoftmax). PREDICTED: 未归一化logits; TARGET: 整数类别 (一维整数张量)."))
 
 (defun make-ce-loss (&key reduction eps label-smoothing (name "ce"))
   (make-instance 'ce-loss
@@ -74,31 +76,32 @@
 		 :name name))
 
 (defmethod compute-loss ((l ce-loss) predicted target)
+  "predicted=logits (B,C); target=整数标签 (B,). 内部做log_softmax后取 -log p_{y_i}."
   (let* ((eps (ce-eps l))
          (smoothing (ce-label-smoothing l))
          (shape (vt-shape predicted))
          (batch (first shape))
          (n-classes (second shape))
-         ;; 数值稳定性裁剪
-         (pred-clipped (vt-clip predicted eps 1.0d0))
-         ;; 构造 one-hot 目标 (batch, n-classes)
+         (max-val (vt-amax predicted :axis 1 :keepdims t))
+         (shifted (vt-- predicted max-val))
+         (exp-s (vt-exp shifted))
+         (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
+         (log-sum-exp (vt-log (vt-+ sum-exp eps)))
+         (log-probs (vt-- shifted log-sum-exp))
          (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
          (target-flat (if (= (length (vt-shape target)) 1)
                           target
-                          (vt-flatten target)))   ; 确保是一维
+                          (vt-flatten target)))
          (one-hot (vt-reshape (vt-take eye target-flat :axis 0)
                               (list batch n-classes)))
-         ;; 标签平滑处理
          (target-smoothed
            (if (> smoothing 0.0d0)
                (vt-+ (vt-scale one-hot (- 1.0d0 smoothing))
                      (vt-scale (vt-ones (list batch n-classes))
                                (/ smoothing n-classes 1.0d0)))
                one-hot))
-         ;; 逐样本损失 = - sum(target_smoothed * log_pred, axis=-1)
          (per-sample (vt-scale
-                      (vt-sum (vt-* target-smoothed pred-clipped)
-                              :axis -1)
+                      (vt-sum (vt-* target-smoothed log-probs) :axis -1)
                       -1.0d0)))
     (ecase (loss-reduction l)
       (:mean (vt-mean per-sample))
@@ -106,29 +109,30 @@
       (:none per-sample))))
 
 (defmethod compute-loss-gradient ((l ce-loss) predicted target)
-  (let* ((smoothing (ce-label-smoothing l))
+  "dL/dlogits = softmax(logits) - target_smoothed  (:mean 时除以 batch)."
+  (let* ((eps (ce-eps l))
+         (smoothing (ce-label-smoothing l))
          (shape (vt-shape predicted))
          (batch (first shape))
          (n-classes (second shape))
-         ;; 计算 softmax 概率（predicted 已经是 log-probs，故 exp 即可）
-         (probs (vt-exp predicted))
-         ;; 构造 one-hot
+         (max-val (vt-amax predicted :axis 1 :keepdims t))
+         (shifted (vt-- predicted max-val))
+         (exp-s (vt-exp shifted))
+         (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
+         (probs (vt-/ exp-s (vt-+ sum-exp eps)))
          (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
          (target-flat (if (= (length (vt-shape target)) 1)
                           target
                           (vt-flatten target)))
          (one-hot (vt-reshape (vt-take eye target-flat :axis 0)
                               (list batch n-classes)))
-         ;; 标签平滑后的目标
          (target-smoothed
            (if (> smoothing 0.0d0)
                (vt-+ (vt-scale one-hot (- 1.0d0 smoothing))
                      (vt-scale (vt-ones (list batch n-classes))
                                (/ smoothing n-classes 1.0d0)))
                one-hot))
-         ;; 梯度 = probs - target_smoothed
          (grad (vt-- probs target-smoothed)))
-    ;; 根据 reduction 缩放梯度
     (ecase (loss-reduction l)
       (:mean (vt-scale grad (/ 1.0d0 batch)))
       (:sum grad)
@@ -220,41 +224,57 @@
 
 (defmethod compute-loss
     ((l cosine-similarity-loss) predicted target)
-  (let* ((dot (vt-sum-axis (vt-* predicted target) -1))
-         (norm-p (vt-map #'sqrt
-			 (vt-+ (vt-sum-axis
-				(vt-square predicted) -1)
-                               1.0d-8)))
-         (norm-t (vt-map #'sqrt
-			 (vt-+ (vt-sum-axis
-				(vt-square target) -1)
-                               1.0d-8)))
-         (cos-sim (vt-mean
-                   (vt-/ dot (vt-* norm-p norm-t)))))
-    (vt-- 1.0d0 cos-sim)))
+  "L = reduction(1 - cos(p,t)), cos(p,t) = <p,t> / (|p| * |t| + eps).
+   eps 只加在分母除法上做数值稳定（与 PyTorch cosine_similarity 一致），
+   不加在 sqrt 里——否则梯度公式会变复杂、小模长下误差大。"
+  (let* ((eps 1.0d-8)
+         (dot (vt-sum-axis (vt-* predicted target) -1))
+         (sq-p (vt-sum-axis (vt-square predicted) -1))
+         (sq-t (vt-sum-axis (vt-square target) -1))
+         (norm-p (vt-map #'sqrt sq-p))
+         (norm-t (vt-map #'sqrt sq-t))
+         ;; denom = |p| * |t| + eps，eps 做除法稳定（防除零）
+         (denom (vt-+ (vt-* norm-p norm-t) eps))
+         (cos-vec (vt-/ dot denom))
+         (n (reduce #'* (vt-shape cos-vec))))
+    (ecase (loss-reduction l)
+      (:mean (vt-- 1.0d0 (vt-mean cos-vec)))
+      (:sum  (vt-- (coerce n 'double-float) (vt-sum cos-vec)))
+      (:none (vt-- 1.0d0 cos-vec)))))
 
 (defmethod compute-loss-gradient
     ((l cosine-similarity-loss) predicted target)
-  (let* ((batch (first (vt-shape predicted)))
-         (safe-norm-p
-           (vt-map #'sqrt
-                   (vt-+ (vt-sum-axis
-                          (vt-square predicted) -1)
-                         1.0d-8)))
-         (safe-norm-t
-           (vt-map #'sqrt
-                   (vt-+ (vt-sum-axis
-                          (vt-square target) -1)
-                         1.0d-8)))
+  "梯度公式与前向严格一致：cos = dot / D, D = |p|*|t| + eps.
+   dcos/dp_i = (t_i * D - dot * dD/dp_i) / D^2
+   dD/dp_i = (p_i / |p|) * |t|    （因为 d|p|/dp_i = p_i/|p|，|t| 与 p 无关）
+   dL/dp_i = -dcos/dp_i   （L = 1 - cos）
+   mean reduction 再除以 batch。
+   向量形状 (batch,D); norm 量 (batch,) 需 reshape 成 (batch,1) 广播."
+  (let* ((shape (vt-shape predicted))
+         (batch (first shape))
+         (extra-dims (- (length shape) 1))
+         (eps 1.0d-8)
          (dot (vt-sum-axis (vt-* predicted target) -1))
-         (cos-sim (vt-/ dot (vt-* safe-norm-p safe-norm-t)))
-         ;; 转为列向量以便广播 (batch, 1)
-         (cos-vec (vt-reshape cos-sim (list batch 1)))
-         (norm-p-vec (vt-reshape safe-norm-p
-                                 (list batch 1)))
-         (grad (vt-- (vt-* (vt-scale predicted cos-vec)
-                           (vt-scale norm-p-vec -1.0d0))
-                     (vt-/ target norm-p-vec))))
+         (sq-p (vt-sum-axis (vt-square predicted) -1))
+         (sq-t (vt-sum-axis (vt-square target) -1))
+         (norm-p (vt-map #'sqrt sq-p))
+         (norm-t (vt-map #'sqrt sq-t))
+         (denom (vt-+ (vt-* norm-p norm-t) eps))
+         (cos-vec (vt-/ dot denom))
+         (b1 (append (list batch) (make-list extra-dims :initial-element 1)))
+         (cos-r (vt-reshape cos-vec b1))
+         (norm-p-r (vt-reshape norm-p b1))
+         (norm-t-r (vt-reshape norm-t b1))
+         (denom-r (vt-reshape denom b1))
+         ;; term1: t_i / D
+         (term1 (vt-/ target denom-r))
+         ;; term2: (dot / D) * (p_i / |p|) * (|t| / D)
+         ;;       = cos(p,t) * (p_i / |p|) * (|t| / D)
+         (term2 (vt-* cos-r
+                      (vt-/ predicted norm-p-r)
+                      (vt-/ norm-t-r denom-r)))
+         (dcos (vt-- term1 term2))
+         (grad (vt-scale dcos -1.0d0)))
     (ecase (loss-reduction l)
       (:mean (vt-scale grad (/ 1.0d0 batch)))
       (:sum grad)
@@ -305,14 +325,14 @@
       (:none grad))))
 
 (defclass cross-entropy-loss (layer)
-  ((probs-cache :accessor ce-probs-cache 
-                :initform nil 
+  ((probs-cache :accessor ce-probs-cache
+                :initform nil
                 :initarg :probs-cache)
-   (targets-cache :accessor ce-targets-cache 
-                  :initform nil 
+   (targets-cache :accessor ce-targets-cache
+                  :initform nil
                   :initarg :targets-cache)
-   (batch-size :accessor ce-batch-size 
-               :initform nil 
+   (batch-size :accessor ce-batch-size
+               :initform nil
                :initarg :batch-size))
   (:documentation "结合 Softmax 的交叉熵损失层，输入为 未归一化得分 和 整数标签"))
 (defun make-cross-entropy-loss ()
@@ -332,20 +352,20 @@
          (log-sum-exp (vt-log sum-exp))
          (probs (vt-/ exp-s sum-exp))
          (losses (vt-zeros (list batch-size 1))))
-    
+
     ;; 全部基于 vt-ref 访问
     (loop for i fixnum from 0 below batch-size do
       (let* ;; 假设 targets 是 1D 张量，用 vt-ref 取出，转为 fixnum 作为列索引
-          ((target-idx (the fixnum (truncate (vt-ref targets i)))) 
+          ((target-idx (the fixnum (truncate (vt-ref targets i))))
            (target-logit (the double-float (vt-ref shifted i target-idx)))
            (lse-val (the double-float (vt-ref log-sum-exp i 0)))
            (sample-loss (the double-float (- lse-val target-logit))))
         (setf (vt-ref losses i 0) sample-loss)))
-    
+
     (psetf (ce-probs-cache l) probs
            (ce-targets-cache l) targets
            (ce-batch-size l) batch-size)
-    
+
     (vt-scale losses inv-batch)))
 
 (defmethod backward ((l cross-entropy-loss) upstream-grad)
@@ -355,11 +375,11 @@
          (batch-size (ce-batch-size l))
          (inv-batch (/ 1.0d0 batch-size))
          (grad (vt-copy probs)))
-    
+
     ;; 全部基于 vt-ref 访问
     (loop for i fixnum from 0 below batch-size do
       (let ((target-idx (the fixnum (truncate (vt-ref targets i)))))
         (decf (vt-ref grad i target-idx) 1.0d0)))
-    
+
     (vt-scale grad inv-batch)))
 

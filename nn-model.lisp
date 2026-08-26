@@ -19,15 +19,15 @@
   (let ((layers (if (listp layer-or-layers)
                     layer-or-layers
                     (list layer-or-layers))))
+    ;; 用 append 而非 push+nreverse，避免 nreverse 破坏 cons 单元导致
+    ;; 多次 add! 后层顺序错乱（原始 bug）
+    (setf (seq-layers model)
+          (append (seq-layers model) layers))
     (dolist (l layers)
-      (push l (seq-layers model))
-      (push (or (layer-name l) "")
-            (seq-layer-names model))))
-  (setf (seq-layers model)
-        (nreverse (seq-layers model)))
-  (setf (seq-layer-names model)
-        (nreverse (seq-layer-names model)))
-  model)
+      (setf (seq-layer-names model)
+            (append (seq-layer-names model)
+                    (list (or (layer-name l) "")))))
+    model))
 
 (defun seq-insert! (model index layer)
   "在指定位置插入层."
@@ -152,10 +152,7 @@
 	       (dolist (slot (c2mop:class-slots class))
 		 (let ((name (c2mop:slot-definition-name slot)))
 		   (when (and (slot-boundp obj name)
-			      (let ((sname (symbol-name name)))
-				(or (and (> (length sname) 0)
-					 (char-equal (char sname 0) #\d))
-				    (search "grad" sname :test #'char-equal))))
+			      (grad-slot-p name))
 		     (let ((val (slot-value obj name)))
 		       (when (vt-p val)
 			 (setf (slot-value obj name)
@@ -472,32 +469,39 @@
        (coerce result-idxs 'list))
       out-shape))))
 
+;; ---- zero-grad! 重写：基于 grad-slots 泛型函数 + zero-grad-children 递归，
+;; ---- 不再依赖 slot 名字白名单启发式，多层同类网络（如多个 dense/conv/lstm）
+;; ---- 每层都被自己的 grad-slots 方法正确清零，不会遗漏也不会误清。
+
+(defgeneric zero-grad-children (component)
+  (:documentation "返回需要递归清零的直接子组件列表。默认返回 nil。")
+  (:method ((c t)) '())
+  (:method ((m sequential)) (coerce (seq-layers m) 'list))
+  (:method ((l residual))  (list (residual-block l)))
+  (:method ((l transformer-block))
+    (list (tb-mha l) (tb-ffn1 l) (tb-ffn2 l)
+          (tb-ln1 l) (tb-ln2 l) (tb-drop1 l) (tb-drop2 l)))
+  ;; ffn1/ffn2 are dense layers directly (not sequential), no further recursion needed
+  (:method ((l neural-network-compat)) (coerce (seq-layers l) 'list)))
+
 (defgeneric zero-grad! (component)
-  (:documentation "将组件及其所有子层中的梯度张量清零（置为 NIL）")
+  (:documentation "将组件及其所有子层中的梯度张量清零（置为 NIL）。
+实现原则：
+  1. 每个叶子层通过 grad-slots 方法返回自己的梯度 accessor 列表（每个
+     accessor 是一个 reader 函数，其 setf 可写），通用方法统一调用 setf
+     将梯度 vt 置为 nil。
+  2. 容器层通过 zero-grad-children 返回需要递归的子组件列表。
+  3. 不做任何 slot 名字匹配/字符串白名单扫描，用户自定义层只需要
+     实现 grad-slots 方法即可被正确清零。")
   (:method ((component null)) nil)
-  (:method ((component layer))
-     (let ((class (class-of component)))
-    (dolist (slot (c2mop:class-slots class))
-      (let ((name (c2mop:slot-definition-name slot)))
-        (when (and (slot-boundp component name)
-                   (let ((sname (symbol-name name)))
-                     (or (and (> (length sname) 0)
-                              (char-equal (char sname 0) #\d))
-                         (search "grad" sname :test #'char-equal))))
-          (let ((val (slot-value component name)))
-            (when (vt-p val)
-              (setf (slot-value component name) nil))))))))
-  (:method ((component sequential))
-    (dolist (layer (seq-layers component))
-      (zero-grad! layer)))
-  (:method ((component residual))
-    (zero-grad! (residual-block component)))
-  (:method ((component transformer-block))
-    (zero-grad! (tb-mha component))
-    (zero-grad! (tb-ffn1 component))
-    (zero-grad! (tb-ffn2 component))
-    (zero-grad! (tb-ln1 component))
-    (zero-grad! (tb-ln2 component))))
+  (:method ((component t))
+    (when (and (typep component 'layer) (layer-trainable-p component))
+      (dolist (slot-name (grad-slots component))
+        (when (and (slot-boundp component slot-name)
+                   (vt-p (slot-value component slot-name)))
+          (setf (slot-value component slot-name) nil))))
+    (dolist (child (zero-grad-children component))
+      (when child (zero-grad! child)))))
 
 
 
@@ -532,13 +536,13 @@
 
 (defun build-model (model &optional dummy-input)
   "强制初始化模型中所有延迟参数.
-   
+
    对于 LSTM/GRU/MHA 等构造时已知维度的层, 直接初始化.
-   对于 Dense/Conv 等依赖输入维度的层, 必须提供 DUMMY-INPUT 
+   对于 Dense/Conv 等依赖输入维度的层, 必须提供 DUMMY-INPUT
    执行一次虚拟前向传播来推断维度.
-   
+
    执行完毕后会自动清理产生的中间缓存, 模型处于干净可用状态.
-   
+
    示例:
      (build-model my-lstm) ; 纯 RNN 不需要 dummy-input
      (build-model my-cnn (vt-zeros (list 1 3 28 28))) ; CNN 需要"
@@ -550,17 +554,17 @@
       (rnn-cell (ensure-rnn-cell-params l))
       (multi-head-attention (ensure-mha-params l))
       ;; Embedding 只需知道词表大小即可初始化
-      (embedding 
+      (embedding
        (unless (emb-weight l)
          ;; 传入一个假的索引 0 触发初始化
          (forward l (vt-zeros (list 1)))))
       (t nil)))
-  
+
   ;; 2. 如果提供了 dummy-input，跑一次前向传播打通剩余层
   (when dummy-input
     (forward model dummy-input))
-  
+
   ;; 3. 核心步骤：清理 dry-run 留下的所有垃圾缓存
   (clear-forward-cache! model)
-  
+
   model)

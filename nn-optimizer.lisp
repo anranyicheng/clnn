@@ -20,7 +20,7 @@
 
 (defun make-sgd (&key lr momentum nesterov grad-clip weight-decay)
   (make-instance 'sgd
-                 :lr (or lr 1e-3)
+                 :lr (coerce (or lr 1e-3) 'double-float)
                  :momentum (or momentum 0.0d0)
                  :nesterov nesterov
                  :grad-clip (or grad-clip 0.0d0)
@@ -42,10 +42,10 @@
           when (and param grad)
             do (let* ((base-key (list owner name idx))
                       (g (clip-gradient grad clip))
-                      (g-reg (if (> wd 0.0d0) 
+                      (g-reg (if (> wd 0.0d0)
                                  (vt-+ g (vt-scale param wd))
                                  g))
-                      (buf (gethash base-key registry 
+                      (buf (gethash base-key registry
                                     (vt-zeros (vt-shape param))))
                       (new-buf (vt-+ (vt-scale buf mu) g-reg)))
                  (setf (gethash base-key registry) new-buf)
@@ -72,7 +72,7 @@
 (defun make-adam (&key lr beta1 beta2 eps amsgrad grad-clip
                     weight-decay)
   (make-instance 'adam
-                 :lr (or lr 1e-3)
+                 :lr (coerce (or lr 1e-3) 'double-float)
                  :beta1 (or beta1 0.9d0)
                  :beta2 (or beta2 0.999d0)
                  :eps (or eps 1.0d-8)
@@ -93,8 +93,8 @@
           for (gname . grad) in grad-list
           for idx upfrom 0
 	  for owner = (first p)
-          for name = (second p) 
-          for param = (third p) 
+          for name = (second p)
+          for param = (third p)
           for setter = (fourth p)
           when (and param grad)
             do (let* ((base-key (list owner name idx))
@@ -156,7 +156,7 @@
 (defun make-adamw (&key lr beta1 beta2 eps amsgrad grad-clip
                      weight-decay)
   (make-instance 'adamw
-                 :lr (or lr 1e-3)
+                 :lr (coerce (or lr 1e-3) 'double-float)
                  :beta1 (or beta1 0.9d0)
                  :beta2 (or beta2 0.999d0)
                  :eps (or eps 1.0d-8)
@@ -177,8 +177,8 @@
           for (gname . grad) in grad-list
           for idx upfrom 0
 	  for owner = (first p)
-          for name = (second p) 
-          for param = (third p) 
+          for name = (second p)
+          for param = (third p)
           for setter = (fourth p)
           when (and param grad)
             do (let* ((base-key (list owner name idx))
@@ -232,7 +232,7 @@
 (defun make-rmsprop (&key lr alpha eps centered momentum grad-clip
                        weight-decay)
   (make-instance 'rmsprop
-                 :lr (or lr 1e-3)
+                 :lr (coerce (or lr 1e-3) 'double-float)
                  :alpha (or alpha 0.99d0)
                  :eps (or eps 1.0d-8)
                  :centered centered
@@ -251,8 +251,8 @@
           for (gname . grad) in grad-list
           for idx upfrom 0
 	  for owner = (first p)
-          for name = (second p) 
-          for param = (third p) 
+          for name = (second p)
+          for param = (third p)
           for setter = (fourth p)
           when (and param grad)
             do (let* ((base-key (list owner name idx))
@@ -316,7 +316,7 @@
 
 (defun make-adagrad (&key lr eps lr-decay grad-clip weight-decay)
   (make-instance 'adagrad
-                 :lr (or lr 1e-2)
+                 :lr (coerce (or lr 1e-2) 'double-float)
                  :eps (or eps 1.0d-8)
                  :lr-decay (or lr-decay 0.0d0)
                  :grad-clip (or grad-clip 0.0d0)
@@ -332,8 +332,8 @@
           for (gname . grad) in grad-list
           for idx upfrom 0
 	  for owner = (first p)
-          for name = (second p) 
-          for param = (third p) 
+          for name = (second p)
+          for param = (third p)
           for setter = (fourth p)
           when (and param grad)
             do (let* ((base-key (list owner name idx))

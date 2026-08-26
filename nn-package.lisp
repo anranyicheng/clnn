@@ -14,24 +14,26 @@
        :vt-copy :vt-contiguous
        :vt-ref :vt-slice :vt-do-each :vt-map :vt-reduce
        :vt-amax :vt-item
-   :vt-+ :vt-- :vt-* :vt-/ :vt-scale :vt-=
+       :vt-+ :vt-- :vt-* :vt-/ :vt-scale :vt-=
        :vt-matmul :vt-einsum :vt-dot :vt-outer
        :vt-sum :vt-mean :vt-std :vt-var
        :vt-amax :vt-amin :vt-argmax :vt-argmin
        :vt-softmax :vt-log-softmax
        :vt-sigmoid :vt-relu :vt-leaky-relu :vt-swish
        :vt-softplus :vt-gelu :vt-mish
-   :vt-hard-tanh :vt-hard-sigmoid :vt-tanh
+       :vt-hard-tanh :vt-hard-sigmoid :vt-tanh
        :vt-exp :vt-log :vt-log2 :vt-log10
        :vt-sqrt :vt-abs :vt-expt :vt-square
        :vt-clip :vt-concatenate :vt-norm
-   :vt-mean-squared-error :vt-binary-cross-entropy
-   :vt-cross-entropy
+       :vt-mean-squared-error :vt-binary-cross-entropy
+       :vt-cross-entropy
        :vt-to-array :vt-from-array
        :vt-flatten-sequence :vt-from-sequence :vt-to-list
-   :vt-inv :vt-det :vt-solve :vt-trace
-   :vt-take :vt-eye
-   :vt-copy-into :vt-flatten)
+       :vt-inv :vt-det :vt-solve :vt-trace
+       :vt-take :vt-eye
+       :vt-copy-into :vt-flatten
+       :vt-random-uniform
+       )
   (:export
    ;; ============= 协议 =============
    :forward :backward :params :grads :update!
@@ -153,6 +155,11 @@
    :compute-grad-norm
    :clipped-gradient-update!
    :param-count :flops-estimate
+
+   ;; ============= 修复新增公共 API =============
+   :with-training
+   :grad-slots :zero-grad-children
+   :reset-rnn-cell-state!
 
    ;; ============= 激活函数名称枚举 =============
    :+activation-names+))

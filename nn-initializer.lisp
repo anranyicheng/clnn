@@ -1,5 +1,24 @@
 (in-package #:nn)
 
+(defun %%fan-in (shape fan-in)
+  "fan-in 计算: 1D 视为 bias 向量 (不应使用, fan-in=1);
+   2D (out,in): fan-in = in;
+   ND (卷积 out,in/groups,kH,kW): fan-in = in * kH * kW."
+  (or fan-in
+      (let ((rank (length shape)))
+        (cond ((= rank 1) 1)            ; 1D bias 退化情况
+              ((= rank 2) (second shape))
+              (t (reduce #'* (rest shape)))))))
+
+(defun %%fan-out (shape fan-out)
+  (or fan-out
+      (let ((rank (length shape)))
+        (cond ((= rank 1) (first shape))
+              ((= rank 2) (first shape))
+              (t (* (first shape)
+                    (if (nth 2 shape) (nth 2 shape) 1)
+                    (if (nth 3 shape) (nth 3 shape) 1)))))))
+
 (defclass he-normal (initializer) ()
   (:documentation "He Normal 初始化: N(0, sqrt(2/fan_in))"))
 
@@ -9,7 +28,7 @@
 (defmethod init-weight ((init he-normal) shape
                         &key fan-in fan-out)
   (declare (ignore fan-out init))
-  (let* ((fi (or fan-in (reduce #'* (butlast shape))))
+  (let* ((fi (%%fan-in shape fan-in))
          (std (sqrt (/ 2.0d0 fi))))
     (vt-scale (vt-random-normal shape) std)))
 
@@ -22,7 +41,7 @@
 (defmethod init-weight ((init he-uniform) shape
                         &key fan-in fan-out)
   (declare (ignore fan-out init))
-  (let* ((fi (or fan-in (reduce #'* (butlast shape))))
+  (let* ((fi (%%fan-in shape fan-in))
          (bound (sqrt (/ 6.0d0 fi))))
     (vt-map (lambda (x)
               (declare (ignore x))
@@ -37,8 +56,8 @@
 (defmethod init-weight ((init xavier-normal) shape
                         &key fan-in fan-out)
   (declare (ignore init))
-  (let* ((fi (or fan-in (reduce #'* (butlast shape))))
-         (fo (or fan-out (first (last shape))))
+  (let* ((fi (%%fan-in shape fan-in))
+         (fo (%%fan-out shape fan-out))
          (std (sqrt (/ 2.0d0 (+ fi fo)))))
     (vt-scale (vt-random-normal shape) std)))
 
@@ -50,8 +69,8 @@
 (defmethod init-weight ((init xavier-uniform) shape
                         &key fan-in fan-out)
   (declare (ignore init))
-  (let* ((fi (or fan-in (reduce #'* (butlast shape))))
-         (fo (or fan-out (first (last shape))))
+  (let* ((fi (%%fan-in shape fan-in))
+         (fo (%%fan-out shape fan-out))
          (bound (sqrt (/ 6.0d0 (+ fi fo)))))
     (vt-map (lambda (x)
               (declare (ignore x))
@@ -78,10 +97,10 @@
          (q-vt (vt-random-normal (list rows cols)))
          ;; 2. 提取底层一维连续数组，用于极致优化的正交化计算
          (q-data (vt-data q-vt)))
-    
+
     (declare (type (simple-array double-float (*)) q-data)
              (type fixnum rows cols num-orth))
-    
+
     ;; Gram–Schmidt 正交化
     (dotimes (j num-orth)
       (let ((v (make-array rows :element-type 'double-float
@@ -89,7 +108,7 @@
         ;; 提取当前列 (使用一维索引计算: i * cols + j，消除二维 aref 开销)
         (dotimes (i rows)
           (setf (aref v i) (aref q-data (+ (* i cols) j))))
-        
+
         ;; 减去在前 j 列上的投影
         (dotimes (k j)
           (let ((dot-prod 0.0d0))
@@ -101,7 +120,7 @@
             (dotimes (i rows)
               (decf (aref v i)
 		    (* dot-prod (aref q-data (+ (* i cols) k)))))))
-        
+
         ;; 归一化（防止零除）
         (let ((norm-sq 0.0d0))
           (dotimes (i rows)
@@ -113,7 +132,7 @@
                 (dotimes (i rows)
                   (setf (aref q-data (+ (* i cols) j))
 			(* (aref v i) inv-norm)))))))))
-    
+
     ;; 原地应用增益并返回 (由于 q-vt 数据已被修改，直接 scale 即可)
     (vt-scale q-vt gain)))
 
@@ -161,16 +180,12 @@
 
 (defmethod init-weight ((init kaiming-normal) shape
                         &key fan-in fan-out)
-  (let* ((fan (ecase (kaiming-mode init)
-                 ((:fan-in fan-in)
-                  (or fan-in (reduce #'* (butlast shape))))
-                 ((:fan-out fan-out)
-                  (or fan-out (first (last shape))))
-                 ((:fan-avg fan-avg)
-                  (/ (+ (or fan-in
-                            (reduce #'* (butlast shape)))
-                        (or fan-out (first (last shape))))
-                     2.0d0))))
+  (let* ((fi (%%fan-in shape fan-in))
+         (fo (%%fan-out shape fan-out))
+         (fan (ecase (kaiming-mode init)
+                 ((:fan-in fan-in) fi)
+                 ((:fan-out fan-out) fo)
+                 ((:fan-avg fan-avg) (/ (+ fi fo) 2.0d0))))
          (gain (ecase (kaiming-nonlinearity init)
                  ((:relu relu) (sqrt 2.0d0))
                  ((:tanh tanh) (sqrt (/ 5.0d0 3.0d0)))

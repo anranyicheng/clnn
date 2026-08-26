@@ -33,8 +33,17 @@
   (apply #'make-instance 'layer args))
 
 (defmethod set-training! ((l layer) mode)
-  (setf (layer-training l) mode)
+  "仅设置本层的局部 training 状态, 不污染全局 *training-mode*."
+  (setf (layer-training l) mode))
+
+(defun set-global-training! (mode)
+  "显式设置全局训练/推理开关 (影响默认 training-p 方法)."
   (setf *training-mode* mode))
+
+(defmacro with-training (mode &body body)
+  "在 BODY 执行期间动态绑定 *training-mode*=MODE, 离开作用域自动恢复."
+  `(let ((*training-mode* ,mode))
+     ,@body))
 
 (defmethod training-p ((l layer)) (layer-training l))
 
@@ -52,6 +61,15 @@
 
 (defgeneric grads (component)
   (:documentation "返回梯度列表.")
+  (:method ((c t)) '()))
+
+(defgeneric grad-slots (component)
+  (:documentation "返回组件自身的梯度 slot reader 列表（每个元素是一个函数，
+接受组件实例，返回梯度 vt 或 nil；其 setf 可用于将梯度置 nil）。
+容器层（sequential/residual/transformer-block）返回 nil，
+通过 zero-grad-children 递归子层；叶子层（dense/conv2d/lstm/...）
+返回自己的梯度 accessor 列表。用户自定义新层只需实现此方法，
+zero-grad! 即可自动正确清零其梯度，无需修改白名单。")
   (:method ((c t)) '()))
 
 (defgeneric update! (component optimizer)
@@ -81,7 +99,7 @@
 
 (defclass optimizer ()
   ((lr :initarg :lr
-       :initform 1e-3
+       :initform 1d-3
        :accessor optimizer-lr
        :type double-float
        :documentation "学习率")

@@ -394,14 +394,14 @@
        (vt-* grad-output (vt-hard-sigmoid-derivative (act-z-cache l))))
       ((:linear :none) grad-output)
       (:softmax
-       (let* ((y (act-a-cache l)) 
+       (let* ((y (act-a-cache l))
               (gy grad-output)
               (sum-gy-y (vt-sum (vt-* gy y) :axis -1 :keepdims t))
               (gz (vt-* y (vt-- gy sum-gy-y))))
          gz))
       (:log-softmax
-       (let* ((z (act-z-cache l)) 
-              (s (vt-softmax z))  
+       (let* ((z (act-z-cache l))
+              (s (vt-softmax z))
               (gy grad-output)
               (sum-gy (vt-sum gy :axis -1 :keepdims t))
               (gz (vt-- gy (vt-* s sum-gy))))
@@ -421,14 +421,14 @@
 (defmethod forward ((l flatten) input)
   (let* ((shape (vt-shape input))
          (start (flatten-start-dim l))
-         (pre-dim (reduce #'* (subseq shape 0 start)))
-         (post-dim (reduce #'* (subseq shape start))))
+         (pre (subseq shape 0 start))
+         (post (subseq shape start))
+         (pre-dim (if pre (reduce #'* pre) 1))
+         (post-dim (if post (reduce #'* post) 1)))
     (vt-reshape
      input
-     (list (if (> start 0)
-	       pre-dim
-	       1)
-	   post-dim))))
+     (append (if (plusp start) pre '())
+             (list post-dim)))))
 
 (defclass residual (layer)
   ((block :initarg :block
@@ -463,3 +463,11 @@
   (call-next-method)
   (when (residual-block l)
     (set-training! (residual-block l) mode)))
+
+;; ---- grad-slots (zero-grad! 基础) ----
+(defmethod grad-slots ((l dense))
+  (let ((slots '(dw)))
+    (when (dense-use-bias-p l) (push 'db slots))
+    slots))
+(defmethod grad-slots ((l activation-layer)) '())
+(defmethod grad-slots ((l flatten)) '())

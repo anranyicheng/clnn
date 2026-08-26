@@ -36,9 +36,14 @@
 		 :accessor rnn-h-prev-cache)
    (h-cache :initarg :h-cache
 	    :initform nil
-	    :accessor rnn-h-cache))
+	    :accessor rnn-h-cache)
+   (state :initarg :state
+          :initform nil
+          :accessor rnn-state))
   (:documentation
-   "h_t = act(x_t @ W_ih.T + h_{t-1} @ W_hh.T + b_ih)"))
+   "h_t = act(x_t @ W_ih.T + h_{t-1} @ W_hh.T + b_ih)
+    多步展开时可通过 (setf (rnn-state l) h-prev) 在每步前注入隐状态;
+    forward 返回后 (rnn-state l) 自动保存最新 h, 可链式读取."))
 
 (defun make-rnn-cell (input-size hidden-size
                       &key activation (name "rnn-cell") (trainable t))
@@ -61,12 +66,16 @@
       (setf (rnn-bih l) (vt-zeros (list hs))))))
 
 (defmethod forward ((l rnn-cell) input)
+  "单步 RNN: h_t = act(x_t Wih^T + h_{t-1} Whh^T + b).
+   若 (rnn-state l) 已设置 (例如循环展开时上一步返回的 h), 则将其作为 h_{t-1};
+   否则初始化为全零. forward 结束后 (rnn-state l) 会被更新为当前 h, 支持链式调用."
   (ensure-rnn-cell-params l)
   (let* ((x (if (= (length (vt-shape input)) 1)
                 (vt-reshape input (list 1 (rnn-input-size l)))
                 input))
          (batch (first (vt-shape x)))
-         (h-prev (vt-zeros (list batch (rnn-hidden-size l))))
+         (h-prev (or (rnn-state l)
+                     (vt-zeros (list batch (rnn-hidden-size l)))))
          (pre-act
            (vt-+ (vt-+ (vt-matmul x (vt-transpose (rnn-wih l)))
                        (vt-matmul h-prev (vt-transpose (rnn-whh l))))
@@ -77,6 +86,7 @@
     (setf (rnn-input-cache l) x)
     (setf (rnn-h-prev-cache l) h-prev)
     (setf (rnn-h-cache l) h)
+    (setf (rnn-state l) h)
     h))
 
 (defun rnn-cell-step (l x h-prev)
@@ -91,6 +101,8 @@
     h))
 
 (defmethod backward ((l rnn-cell) grad-output)
+  "返回 (values dx dh-prev); sequential 反向默认取 dx, 多步展开可用
+   multiple-value-bind 取得 dh-prev 传给上一时刻."
   (let* ((x (rnn-input-cache l))
          (h-prev (rnn-h-prev-cache l))
          (h (rnn-h-cache l))
@@ -105,14 +117,17 @@
          (dbih (vt-sum dh :axis 0))
          (dx (vt-matmul dh wih))
          (dh-prev (vt-matmul dh whh)))
-    (declare (ignore dh-prev))
     (setf (rnn-dwih l)
           (if (rnn-dwih l) (vt-+ (rnn-dwih l) dwih) dwih))
     (setf (rnn-dwhh l)
           (if (rnn-dwhh l) (vt-+ (rnn-dwhh l) dwhh) dwhh))
     (setf (rnn-dbih l)
           (if (rnn-dbih l) (vt-+ (rnn-dbih l) dbih) dbih))
-    dx))
+    (values dx dh-prev)))
+
+(defun reset-rnn-cell-state! (cell)
+  "重置 rnn-cell 的隐状态缓存, 用于开始新一轮序列前清空."
+  (setf (rnn-state cell) nil))
 
 (defmethod params ((l rnn-cell))
   (list (list l "wih" (rnn-wih l)
@@ -183,8 +198,11 @@
                       (sqrt (/ 2.0d0 (+ hs hs)))))
       (let ((b-ih (vt-zeros (list gate-size)))
             (b-hh (vt-zeros (list gate-size))))
+        ;; PyTorch 标准：LSTM forget gate 初始 bias 设为 1（合计 2）
+        ;; 使初始遗忘门 sigmoid(2) ≈ 0.88，避免训练初期梯度消失
         (dotimes (i hs)
-          (setf (vt-ref b-ih (+ hs i)) 1.0d0))
+          (setf (vt-ref b-ih (+ hs i)) 1.0d0)
+          (setf (vt-ref b-hh (+ hs i)) 1.0d0))
         (setf (lstm-bias-ih l) b-ih)
         (setf (lstm-bias-hh l) b-hh)))))
 
@@ -204,14 +222,14 @@
          (all-gates '()) (all-c '())
          (all-h '()) (all-x '()))
     (dotimes (i seq-len)
-      (let* ((x-t (vt-slice input (list :all) (list i) (list :all))) 
+      (let* ((x-t (vt-slice input (list :all) (list i) (list :all)))
              (gates
                (vt-+ (vt-+
                       (vt-matmul x-t (vt-transpose wih))
                       (vt-matmul h (vt-transpose whh)))
                      (vt-+ bih bhh)))
              (i-gate (vt-sigmoid
-                      (vt-slice gates (list :all) `(0 ,hs))))     
+                      (vt-slice gates (list :all) `(0 ,hs))))
              (f-gate (vt-sigmoid
                       (vt-slice gates (list :all) `(,hs ,(* 2 hs)))))
              (g-gate (vt-tanh
@@ -299,7 +317,7 @@
         (setf dbhh-acc
               (vt-+ dbhh-acc (vt-sum d-gates :axis 0)))
         (setf dh-next (vt-matmul d-gates whh))
-        (setf (vt-slice grad-input (list :all) (list idx) (list :all)) 
+        (setf (vt-slice grad-input (list :all) (list idx) (list :all))
               (vt-matmul d-gates wih))
         (setf dc-next (vt-* dc f-gate))))
     (setf (lstm-dweight-ih l)
@@ -579,3 +597,10 @@
         (cons "bias_ih" (gru-dbias-ih l))
         (cons "bias_hh" (gru-dbias-hh l))))
 
+
+;; ---- grad-slots ----
+(defmethod grad-slots ((l rnn-cell)) '(dwih dwhh dbih))
+(defmethod grad-slots ((l lstm))
+  '(dweight-ih dweight-hh dbias-ih dbias-hh))
+(defmethod grad-slots ((l gru))
+  '(dweight-ih dweight-hh dbias-ih dbias-hh))

@@ -64,25 +64,25 @@
              :accessor bn-momentum :type double-float)
    (affine :initarg :affine :initform t
            :reader bn-affine-p :type boolean)
-   
+
    ;; --- 可学习参数 ---
    (gamma :initarg :gamma :initform nil
           :accessor bn-gamma :type (or null vt))
    (beta :initarg :beta :initform nil
          :accessor bn-beta :type (or null vt))
-   
+
    ;; --- 运行时统计量 ---
    (running-mean :initarg :running-mean :initform nil
                  :accessor bn-running-mean :type (or null vt))
    (running-var :initarg :running-var :initform nil
                 :accessor bn-running-var :type (or null vt))
-   
+
    ;; --- 梯度 ---
    (dgamma :initarg :dgamma :initform nil
            :accessor bn-dgamma :type (or null vt))
    (dbeta :initarg :dbeta :initform nil
           :accessor bn-dbeta :type (or null vt))
-   
+
    ;; --- 前向缓存 ---
    (input-cache :initarg :input-cache :initform nil
                 :accessor bn-input-cache :type (or null vt))
@@ -90,7 +90,7 @@
                :accessor bn-xhat-cache :type (or null vt))
    (std-inv-cache :initarg :std-inv-cache :initform nil
                   :accessor bn-std-inv-cache :type (or null vt))
-   
+
    ;; --- 状态变量 ---
    ;; 注意: 类型改为 (or null fixnum) 以兼容 :initform nil
    (batch-size :initarg :batch-size :initform nil
@@ -99,7 +99,7 @@
 
 
 (defun make-batch-norm
-    (num-features &key eps momentum affine
+    (num-features &key eps momentum (affine t)
                     (name "batch-norm") (trainable t))
   (make-instance 'batch-norm
 		 :num-features num-features
@@ -108,89 +108,114 @@
 		 :affine (if affine t nil)
 		 :name name :trainable trainable))
 
+(defun bn-permute-to-channel-last (shape)
+  "Permutation to move axis=1 (C) to last: (N,C,H,W) -> (N,H,W,C), i.e. perm (0,2,3,...,1)."
+  (append (list 0) (loop for i from 2 below (length shape) collect i) (list 1)))
+
+(defun bn-invert-perm (perm)
+  (let* ((n (length perm))
+         (inv (make-list n)))
+    (dotimes (i n inv)
+      (setf (nth (nth i perm) inv) i))))
+
 (defmethod forward ((l batch-norm) input)
   (let* ((nf (bn-num-features l))
          (eps (bn-eps l))
          (shape (vt-shape input))
-         (batch-size (first shape)))
+         (rank (length shape)))
     (unless (bn-gamma l)
       (setf (bn-gamma l) (vt-ones (list nf)))
       (setf (bn-beta l) (vt-zeros (list nf)))
       (setf (bn-running-mean l) (vt-zeros (list nf)))
       (setf (bn-running-var l) (vt-ones (list nf))))
-    (setf (bn-batch-size l) batch-size)
-    (setf (bn-input-cache l) input)
-    (if (training-p l)
-        (let* ((mean (vt-mean input :axis 0 :keepdims nil))
-               (diff (vt-- input mean))
-               (var-biased (vt-mean (vt-square diff) :axis 0))   ; 有偏方差
-               (std-inv (vt-std-inv-from-var var-biased eps))
-               (xhat (vt-* diff std-inv)))
-          (setf (bn-xhat-cache l) xhat)
-          (setf (bn-std-inv-cache l) std-inv)
-          ;; 更新 running-var 使用有偏方差（与 PyTorch 一致）
-          (let ((m (bn-momentum l)))
-            (setf (bn-running-mean l)
-		  (vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m))
-                        (vt-scale mean m)))
-            (setf (bn-running-var l)
-		  (vt-+ (vt-scale (bn-running-var l) (- 1.0d0 m))
-                        (vt-scale var-biased m))))
-          (if (bn-affine-p l)
-              (vt-+ (vt-* (bn-gamma l) xhat) (bn-beta l))
-              xhat))
-        ;; 推理模式保持不变
-        (let* ((std-inv (vt-std-inv-from-var (bn-running-var l) eps))
-               (xhat (vt-* (vt-- input (bn-running-mean l)) std-inv)))
-          (if (bn-affine-p l)
-              (vt-+ (vt-* (bn-gamma l) xhat) (bn-beta l))
-              xhat)))))
+    (if (= rank 2)
+        (let* ((batch (first shape)))
+          (setf (bn-batch-size l) batch)
+          (setf (bn-input-cache l) input)
+          (if (training-p l)
+              (let* ((mean-r (vt-mean input :axis 0 :keepdims t))
+                     (diff (vt-- input mean-r))
+                     (var-r (vt-mean (vt-square diff) :axis 0 :keepdims t))
+                     (std-inv (vt-map (lambda (v) (/ 1.0d0 (sqrt (+ v eps)))) var-r))
+                     (xhat (vt-* diff std-inv)))
+                (setf (bn-xhat-cache l) xhat)
+                (setf (bn-std-inv-cache l) std-inv)
+                (let ((m (bn-momentum l)))
+                  (setf (bn-running-mean l) (vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m)) (vt-scale (vt-reshape mean-r (list nf)) m)))
+                  (setf (bn-running-var l) (vt-+ (vt-scale (bn-running-var l) (- 1.0d0 m)) (vt-scale (vt-reshape var-r (list nf)) m))))
+                (if (bn-affine-p l) (vt-+ (vt-* (bn-gamma l) xhat) (bn-beta l)) xhat))
+              (let* ((rm (vt-reshape (bn-running-mean l) (list 1 nf)))
+                     (rv (vt-reshape (bn-running-var l) (list 1 nf)))
+                     (std-inv (vt-map (lambda (v) (/ 1.0d0 (sqrt (+ v eps)))) rv))
+                     (xhat (vt-* (vt-- input rm) std-inv)))
+                (if (bn-affine-p l) (vt-+ (vt-* (bn-gamma l) xhat) (bn-beta l)) xhat))))
+        ;; ND case: permute C to last, flatten to 2D
+        (let* ((perm (bn-permute-to-channel-last shape))
+               (inv-perm (bn-invert-perm perm))
+               (trans (vt-transpose input perm))
+               (tshape (vt-shape trans))
+               (spatial (reduce #'* (butlast tshape)))
+               (two-d (vt-reshape trans (list spatial nf))))
+          (setf (bn-batch-size l) spatial)
+          (setf (bn-input-cache l) (list input inv-perm tshape))
+          (if (training-p l)
+              (let* ((mean-r (vt-mean two-d :axis 0 :keepdims t))
+                     (diff (vt-- two-d mean-r))
+                     (var-r (vt-mean (vt-square diff) :axis 0 :keepdims t))
+                     (std-inv-r (vt-map (lambda (v) (/ 1.0d0 (sqrt (+ v eps)))) var-r))
+                     (xhat-2d (vt-* diff std-inv-r))
+                     (mean-v (vt-reshape mean-r (list nf)))
+                     (var-v (vt-reshape var-r (list nf))))
+                (setf (bn-xhat-cache l) xhat-2d)
+                (setf (bn-std-inv-cache l) std-inv-r)
+                (let ((m (bn-momentum l)))
+                  (setf (bn-running-mean l) (vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m)) (vt-scale mean-v m)))
+                  (setf (bn-running-var l) (vt-+ (vt-scale (bn-running-var l) (- 1.0d0 m)) (vt-scale var-v m))))
+                (let* ((y-2d (if (bn-affine-p l) (vt-+ (vt-* xhat-2d (bn-gamma l)) (bn-beta l)) xhat-2d))
+                       (y-t (vt-reshape y-2d tshape))
+                       (y (vt-transpose y-t inv-perm))) y))
+              (let* ((mean-v (vt-reshape (bn-running-mean l) (list 1 nf)))
+                     (var-v (vt-reshape (bn-running-var l) (list 1 nf)))
+                     (std-inv (vt-map (lambda (v) (/ 1.0d0 (sqrt (+ v eps)))) var-v))
+                     (xhat-2d (vt-* (vt-- two-d mean-v) std-inv))
+                     (y-2d (if (bn-affine-p l) (vt-+ (vt-* xhat-2d (bn-gamma l)) (bn-beta l)) xhat-2d))
+                     (y-t (vt-reshape y-2d tshape))
+                     (y (vt-transpose y-t inv-perm))) y))))))
 
 (defmethod backward ((l batch-norm) grad-output)
-  "BatchNorm 反向传播."
-  (let* ((n (bn-batch-size l))
-         (xhat (bn-xhat-cache l))
-         (std-inv (bn-std-inv-cache l))
-         (dxhat
-           (if (bn-affine-p l)
-               (vt-* grad-output (bn-gamma l))
-               grad-output)))
-    (when (bn-affine-p l)
-      (setf (bn-dgamma l)
-            (vt-sum (vt-* grad-output xhat)
-                    :axis 0))
-      (setf (bn-dbeta l)
-            (vt-sum grad-output :axis 0)))
-    (let* ((sum-dxhat
-             (vt-sum dxhat :axis 0 :keepdims t))
-           (sum-dxhat-xhat
-             (vt-sum (vt-* dxhat xhat)
-                     :axis 0 :keepdims t))
-           (dx
-             (vt-*
-              std-inv
-              (vt-scale
-               (vt--
-                (vt-- (vt-scale dxhat n) sum-dxhat)
-                (vt-* xhat sum-dxhat-xhat))
-               (/ 1.0d0 n)))))
-      dx)))
+  (let ((cache (bn-input-cache l)))
+    (if (vt-p cache)
+        (let* ((n (coerce (bn-batch-size l) 'double-float))
+               (xhat (bn-xhat-cache l))
+               (std-inv (bn-std-inv-cache l))
+               (dxhat (if (bn-affine-p l) (vt-* grad-output (bn-gamma l)) grad-output)))
+          (when (bn-affine-p l)
+            (setf (bn-dgamma l) (vt-sum (vt-* grad-output xhat) :axis 0))
+            (setf (bn-dbeta l) (vt-sum grad-output :axis 0)))
+          (let* ((sum-dxhat (vt-sum dxhat :axis 0 :keepdims t))
+                 (sum-dxhat-xhat (vt-sum (vt-* dxhat xhat) :axis 0 :keepdims t))
+                 (dx (vt-* std-inv (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat) (vt-* xhat sum-dxhat-xhat)) (/ 1.0d0 n)))))
+            dx))
+        (destructuring-bind (orig-input inv-perm tshape) cache
+          (declare (ignore orig-input))
+          (let* ((nf (bn-num-features l))
+                 (spatial (reduce #'* (butlast tshape)))
+                 (fwd-perm (bn-invert-perm inv-perm))
+                 (grad-t (vt-transpose grad-output fwd-perm))
+                 (g2d (vt-reshape grad-t (list spatial nf)))
+                 (n (coerce (bn-batch-size l) 'double-float))
+                 (xhat (bn-xhat-cache l))
+                 (std-inv-r (bn-std-inv-cache l))
+                 (dxhat (if (bn-affine-p l) (vt-* g2d (vt-reshape (bn-gamma l) (list 1 nf))) g2d)))
+            (when (bn-affine-p l)
+              (setf (bn-dgamma l) (vt-sum (vt-* g2d xhat) :axis 0))
+              (setf (bn-dbeta l) (vt-sum g2d :axis 0)))
+            (let* ((sum-dxhat (vt-sum dxhat :axis 0 :keepdims t))
+                   (sum-dxhat-xhat (vt-sum (vt-* dxhat xhat) :axis 0 :keepdims t))
+                   (dx2d (vt-* std-inv-r (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat) (vt-* xhat sum-dxhat-xhat)) (/ 1.0d0 n))))
+                   (dx-t (vt-reshape dx2d tshape))
+                   (dx (vt-transpose dx-t inv-perm))) dx))))))
 
-
-(defmethod params ((l batch-norm))
-  (if (bn-affine-p l)
-      (list
-       (list l "gamma" (bn-gamma l)
-             #'(lambda (v) (setf (bn-gamma l) v)))
-       (list l "beta" (bn-beta l)
-             #'(lambda (v) (setf (bn-beta l) v))))
-      '()))
-
-(defmethod grads ((l batch-norm))
-  (if (bn-affine-p l)
-      (list (cons "gamma" (bn-dgamma l))
-            (cons "beta" (bn-dbeta l)))
-      '()))
 
 (defclass layer-norm (layer)
   ((normalized-shape :initarg :normalized-shape
@@ -198,24 +223,24 @@
    (eps :initarg :eps :initform 1.0d-5
         :accessor ln-eps :type double-float)
    (affine :initarg :affine :initform t
-           :reader ln-affine-p)   
+           :reader ln-affine-p)
    ;; --- 可学习参数 ---
    (gamma :initarg :gamma :initform nil
           :accessor ln-gamma :type (or null vt))
    (beta :initarg :beta :initform nil
-         :accessor ln-beta :type (or null vt))   
+         :accessor ln-beta :type (or null vt))
    ;; --- 梯度 ---
    (dgamma :initarg :dgamma :initform nil
            :accessor ln-dgamma :type (or null vt))
    (dbeta :initarg :dbeta :initform nil
-          :accessor ln-dbeta :type (or null vt))   
+          :accessor ln-dbeta :type (or null vt))
    ;; --- 前向缓存 ---
    (input-cache :initarg :input-cache :initform nil
                 :accessor ln-input-cache :type (or null vt))
    (xhat-cache :initarg :xhat-cache :initform nil
                :accessor ln-xhat-cache :type (or null vt))
    (std-inv-cache :initarg :std-inv-cache :initform nil
-                  :accessor ln-std-inv-cache :type (or null vt))   
+                  :accessor ln-std-inv-cache :type (or null vt))
    ;; --- 状态变量 ---
    ;; 同样改为 (or null fixnum) 以兼容 :initform nil
    (norm-size :initarg :norm-size :initform nil
@@ -350,3 +375,10 @@
       (list (cons "gamma" (ln-dgamma l))
             (cons "beta" (ln-dbeta l)))
       '()))
+
+;; ---- grad-slots ----
+(defmethod grad-slots ((l dropout)) '())
+(defmethod grad-slots ((l batch-norm))
+  (if (bn-affine-p l) '(dgamma dbeta) '()))
+(defmethod grad-slots ((l layer-norm))
+  (if (ln-affine-p l) '(dgamma dbeta) '()))

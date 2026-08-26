@@ -95,7 +95,8 @@
     (setf (emb-dw l)
           (vt-reshape
            (vt-from-array dw-data)
-           (list ne ed)))))
+           (list ne ed)))
+    nil))
 
 (defmethod params ((l embedding))
   (when (emb-weight l)
@@ -106,3 +107,6 @@
 (defmethod grads ((l embedding))
   (when (emb-dw l)
     (list (cons "weight" (emb-dw l)))))
+
+;; ---- grad-slots ----
+(defmethod grad-slots ((l embedding)) '(dw))

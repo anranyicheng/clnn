@@ -16,9 +16,9 @@
     (vt-transpose vt perm)))
 
 (defun sdpa-forward (q k v &optional mask dropout-rate is-training)
-  "SDPA 前向 (维度无关版本)."
-  (let* ((d-k (second (vt-shape q)))
-         (scale (/ 1.0d0 (sqrt d-k)))
+  "SDPA 前向 (维度无关版本): d_k = 最后一维(head_dim)."
+  (let* ((d-k (car (last (vt-shape q))))
+         (scale (/ 1.0d0 (sqrt (coerce d-k 'double-float))))
          ;; 使用防御性转置
          (scores (vt-scale (vt-matmul q (transpose-last-two k)) scale))
          (masked-scores (if mask (funcall mask scores) scores))
@@ -35,9 +35,9 @@
     (values output attn-dropped)))
 
 (defun sdpa-backward (d-output q k v attn)
-  "SDPA 反向 (维度无关版本)."
-  (let* ((d-k (second (vt-shape q)))
-         (scale (/ 1.0d0 (sqrt d-k)))
+  "SDPA 反向 (维度无关版本): d_k = 最后一维(head_dim)."
+  (let* ((d-k (car (last (vt-shape q))))
+         (scale (/ 1.0d0 (sqrt (coerce d-k 'double-float))))
          ;; 使用防御性转置
          (dv (vt-matmul (transpose-last-two attn) d-output))
          (d-attn (vt-matmul d-output (transpose-last-two v)))
@@ -60,37 +60,37 @@
    (use-bias :initarg :use-bias
              :initform t
              :reader mha-use-bias-p)
-   (dropout-rate :initarg :dropout-rate 
+   (dropout-rate :initarg :dropout-rate
                  :initform 0.0d0
                  :accessor mha-dropout-rate)
-   
+
    ;; --- 权重矩阵 ---
    (w-q :initarg :w-q :initform nil :accessor mha-wq)
    (w-k :initarg :w-k :initform nil :accessor mha-wk)
    (w-v :initarg :w-v :initform nil :accessor mha-wv)
    (w-o :initarg :w-o :initform nil :accessor mha-wo)
-   
+
    ;; --- 偏置向量 ---
    (b-q :initarg :b-q :initform nil :accessor mha-bq)
    (b-k :initarg :b-k :initform nil :accessor mha-bk)
    (b-v :initarg :b-v :initform nil :accessor mha-bv)
    (b-o :initarg :b-o :initform nil :accessor mha-bo)
-   
+
    ;; --- 权重梯度 ---
    (dw-q :initarg :dw-q :initform nil :accessor mha-dwq)
    (dw-k :initarg :dw-k :initform nil :accessor mha-dwk)
    (dw-v :initarg :dw-v :initform nil :accessor mha-dwv)
    (dw-o :initarg :dw-o :initform nil :accessor mha-dwo)
-   
+
    ;; --- 偏置梯度 ---
    (db-q :initarg :db-q :initform nil :accessor mha-dbq)
    (db-k :initarg :db-k :initform nil :accessor mha-dbk)
    (db-v :initarg :db-v :initform nil :accessor mha-dbv)
    (db-o :initarg :db-o :initform nil :accessor mha-dbo)
-   
+
    ;; --- 前向传播缓存 ---
    (cache :initarg :cache :initform nil :accessor mha-cache))
-  
+
   (:documentation "多头注意力 (完整实现)."))
 
 
@@ -388,7 +388,7 @@
                  :reader tb-dropout-rate)
    (eps :initarg :eps
         :initform 1.0d-5
-        :reader tb-eps)   
+        :reader tb-eps)
    ;; --- 子层组件 ---
    (mha :initarg :mha :initform nil :accessor tb-mha)
    (ffn-dense1 :initarg :ffn-dense1 :initform nil :accessor tb-ffn1)
@@ -492,3 +492,10 @@
                      (tb-ln2 l) (tb-drop1 l)
                      (tb-drop2 l)))
     (when sub (set-training! sub mode))))
+
+;; ---- grad-slots ----
+(defmethod grad-slots ((l multi-head-attention))
+  (let ((slots '(dw-q dw-k dw-v dw-o)))
+    (when (mha-use-bias-p l)
+      (setf slots (nconc slots '(db-q db-k db-v db-o))))
+    slots))
