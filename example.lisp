@@ -464,22 +464,22 @@
   (let* ((batch 10) (num-classes 3)
          (dummy-features (vt-random-normal (list batch 8)))
          (classifier (make-dense num-classes :activation :none))
-         (ce-loss (make-cross-entropy-loss))
+         (ce-loss (make-ce-loss))
          (opt (make-adam :lr 0.1d0))
          (targets (vt-from-sequence
 		   (make-array batch :element-type 'fixnum 
 				     :initial-contents
-				     '(0 2 1 0 1 2 2 0 1 0)))))
+				     '(0 2 1 0 1 2 2 0 1 0))
+                   :dtype :int64)))
     
     (build-model classifier dummy-features)    
     (dotimes (i 100)
       (zero-grad! classifier)
       (let* ((logits (forward classifier dummy-features))
-             ;; 传入
-             (loss-vt (forward ce-loss (list logits targets)))
-             (loss-val (vt-item (vt-mean loss-vt)))
-             ;; CE 的 backward 传什么都没关系，它内部会忽略，直接返回对 logits 的梯度
-             (grad (backward ce-loss (list loss-val))))
+             ;; 用 loss 协议：compute-loss 返回标量损失，
+             ;; compute-loss-gradient 返回对 logits 的梯度
+             (loss-val (vt-item (compute-loss ce-loss logits targets)))
+             (grad (compute-loss-gradient ce-loss logits targets)))
         (backward classifier grad)
         (model-update! classifier opt)
         (when (zerop (mod i 5))

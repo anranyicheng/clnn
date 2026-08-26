@@ -2,19 +2,19 @@
 
 (defun %%fan-in (shape fan-in)
   "fan-in 计算: 1D 视为 bias 向量 (不应使用, fan-in=1);
-   2D (out,in): fan-in = in;
-   ND (卷积 out,in/groups,kH,kW): fan-in = in * kH * kW."
+   2D (in,out) [dense 权重形状]: fan-in = in;
+   ND (卷积 out,in,kH,kW): fan-in = in * kH * kW."
   (or fan-in
       (let ((rank (length shape)))
         (cond ((= rank 1) 1)            ; 1D bias 退化情况
-              ((= rank 2) (second shape))
+              ((= rank 2) (first shape)) ; (in,out) -> in
               (t (reduce #'* (rest shape)))))))
 
 (defun %%fan-out (shape fan-out)
   (or fan-out
       (let ((rank (length shape)))
         (cond ((= rank 1) (first shape))
-              ((= rank 2) (first shape))
+              ((= rank 2) (second shape)) ; (in,out) -> out
               (t (* (first shape)
                     (if (nth 2 shape) (nth 2 shape) 1)
                     (if (nth 3 shape) (nth 3 shape) 1)))))))
