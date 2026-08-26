@@ -410,7 +410,8 @@
 (defclass flatten (layer)
   ((start-dim :initarg :start-dim
 	      :initform 1
-              :reader flatten-start-dim))
+              :reader flatten-start-dim)
+   (cache :initform nil :accessor flatten-cache))
   (:documentation
    "将 (batch, d1, d2, ...) 展平为 (batch, d1*d2*...)."))
 
@@ -425,10 +426,18 @@
          (post (subseq shape start))
          (pre-dim (if pre (reduce #'* pre) 1))
          (post-dim (if post (reduce #'* post) 1)))
+    (setf (flatten-cache l) shape)
     (vt-reshape
      input
      (append (if (plusp start) pre '())
              (list post-dim)))))
+
+(defmethod backward ((l flatten) grad-output)
+  "把展平后的梯度 reshape 回前向输入形状。"
+  (let ((shape (flatten-cache l)))
+    (if shape
+        (vt-reshape grad-output shape)
+        grad-output)))
 
 (defclass residual (layer)
   ((block :initarg :block
