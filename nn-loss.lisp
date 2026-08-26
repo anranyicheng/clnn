@@ -60,25 +60,21 @@
       (:none grad))))
 
 (defclass ce-loss (loss)
-  ((eps :initarg :eps
-	:initform 1.0d-7
-	:accessor ce-eps)
-   (label-smoothing :initarg :label-smoothing
+  ((label-smoothing :initarg :label-smoothing
 		    :initform 0.0d0
 		    :accessor ce-label-smoothing))
   (:documentation "多分类CE (NLL+LogSoftmax). PREDICTED: 未归一化logits; TARGET: 整数类别 (一维整数张量)."))
 
-(defun make-ce-loss (&key reduction eps label-smoothing (name "ce"))
+(defun make-ce-loss (&key reduction label-smoothing (name "ce"))
   (make-instance 'ce-loss
 		 :reduction (or reduction :mean)
-		 :eps (or eps 1.0d-7)
 		 :label-smoothing (or label-smoothing 0.0d0)
 		 :name name))
 
 (defmethod compute-loss ((l ce-loss) predicted target)
-  "predicted=logits (B,C); target=整数标签 (B,). 内部做log_softmax后取 -log p_{y_i}."
-  (let* ((eps (ce-eps l))
-         (smoothing (ce-label-smoothing l))
+  "predicted=logits (B,C); target=整数标签 (B,). 内部做log_softmax后取 -log p_{y_i}.
+数值稳定通过 max-shift 实现（shifted ≤ 0 且 sum-exp ≥ 1），无需额外 eps。"
+  (let* ((smoothing (ce-label-smoothing l))
          (shape (vt-shape predicted))
          (batch (first shape))
          (n-classes (second shape))
@@ -86,7 +82,7 @@
          (shifted (vt-- predicted max-val))
          (exp-s (vt-exp shifted))
          (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
-         (log-sum-exp (vt-log (vt-+ sum-exp eps)))
+         (log-sum-exp (vt-log sum-exp))
          (log-probs (vt-- shifted log-sum-exp))
          (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
          (target-flat (if (= (length (vt-shape target)) 1)
@@ -109,9 +105,9 @@
       (:none per-sample))))
 
 (defmethod compute-loss-gradient ((l ce-loss) predicted target)
-  "dL/dlogits = softmax(logits) - target_smoothed  (:mean 时除以 batch)."
-  (let* ((eps (ce-eps l))
-         (smoothing (ce-label-smoothing l))
+  "dL/dlogits = softmax(logits) - target_smoothed  (:mean 时除以 batch).
+softmax = exp-s / sum-exp（无 eps），梯度每行和精确为 0，与 PyTorch 一致。"
+  (let* ((smoothing (ce-label-smoothing l))
          (shape (vt-shape predicted))
          (batch (first shape))
          (n-classes (second shape))
@@ -119,7 +115,7 @@
          (shifted (vt-- predicted max-val))
          (exp-s (vt-exp shifted))
          (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
-         (probs (vt-/ exp-s (vt-+ sum-exp eps)))
+         (probs (vt-/ exp-s sum-exp))
          (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
          (target-flat (if (= (length (vt-shape target)) 1)
                           target
