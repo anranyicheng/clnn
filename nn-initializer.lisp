@@ -43,10 +43,7 @@
   (declare (ignore fan-out init))
   (let* ((fi (%%fan-in shape fan-in))
          (bound (sqrt (/ 6.0d0 fi))))
-    (vt-map (lambda (x)
-              (declare (ignore x))
-              (- (* 2.0d0 (random 1.0d0) bound) bound))
-            (vt-zeros shape))))
+    (vt-random-uniform shape :low (- bound) :high bound)))
 
 (defclass xavier-normal (initializer) ())
 
@@ -72,10 +69,7 @@
   (let* ((fi (%%fan-in shape fan-in))
          (fo (%%fan-out shape fan-out))
          (bound (sqrt (/ 6.0d0 (+ fi fo)))))
-    (vt-map (lambda (x)
-              (declare (ignore x))
-              (- (* 2.0d0 (random 1.0d0) bound) bound))
-            (vt-zeros shape))))
+    (vt-random-uniform shape :low (- bound) :high bound)))
 
 (defclass orthogonal-init (initializer)
   ((gain :initarg :gain :initform 1.0d0 :reader orth-gain))

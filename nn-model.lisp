@@ -146,17 +146,14 @@
 
 
 (defun scale-all-grads! (component factor)
-  "递归将所有梯度张量乘以 factor (原地修改层内部状态)."
+  "递归将所有梯度张量乘以 factor（原地修改层内部状态）。
+基于 grad-slots 泛型函数定位梯度 slot，避免按名字字符串/白名单的脆弱启发式。"
   (labels ((scale-slots (obj)
-	     (let ((class (class-of obj)))
-	       (dolist (slot (c2mop:class-slots class))
-		 (let ((name (c2mop:slot-definition-name slot)))
-		   (when (and (slot-boundp obj name)
-			      (grad-slot-p name))
-		     (let ((val (slot-value obj name)))
-		       (when (vt-p val)
-			 (setf (slot-value obj name)
-			       (vt-scale val factor))))))))))
+             (dolist (slot-name (grad-slots obj))
+               (when (and (slot-boundp obj slot-name)
+                          (vt-p (slot-value obj slot-name)))
+                 (setf (slot-value obj slot-name)
+                       (vt-scale (slot-value obj slot-name) factor))))))
     (typecase component
       (sequential (dolist (l (seq-layers component))
                     (scale-all-grads! l factor)))
@@ -230,27 +227,70 @@
    condition x y))
 
 
+(defun %serialize-vt (tensor)
+  "将张量序列化为 plist（含 shape/dtype/values），可无损还原。"
+  (when tensor
+    (list :shape (vt-shape tensor)
+          :dtype (vt-dtype tensor)
+          :values (vt-to-list tensor))))
+
+(defun %restore-vt (spec)
+  "从 %serialize-vt 产生的 plist 还原张量。"
+  (destructuring-bind (&key shape dtype values) spec
+    (vt-reshape (vt-from-sequence values :dtype dtype) shape)))
+
+(defun layer->plist (l)
+  "将单个层序列化为 plist（目前支持 dense / activation-layer）。"
+  (let ((cls (class-name (class-of l))))
+    (ecase cls
+      (dense
+       (list :type 'dense
+             :name (layer-name l)
+             :in-dim (dense-in-dim l)
+             :out-dim (dense-out-dim l)
+             :activation (dense-activation l)
+             :use-bias (dense-use-bias-p l)
+             :weights (%serialize-vt (dense-weights l))
+             :bias (%serialize-vt (dense-bias l))))
+      (activation-layer
+       (list :type 'activation-layer
+             :name (layer-name l)
+             :kind (activation-kind l)
+             :leaky-alpha (act-leaky-alpha l)))
+      (otherwise (error "model->plist: 不支持的层类型 ~a" cls)))))
+
 (defun model->plist (model)
-  "将模型序列化为 plist (用于保存)."
+  "将模型序列化为 plist（用于保存）。目前支持 sequential 容器与 dense/activation-layer 层。"
   `(:type ,(class-name (class-of model))
     :name ,(layer-name model)
-    :layers ,(mapcar
-              (lambda (l)
-                `(:type ,(class-name (class-of l))
-                  :name ,(layer-name l)
-                  :params ,(mapcar
-                            (lambda (p)
-                              (cons (second p)
-                                    (vt-to-list
-                                     (third p))))
-                            (params l))))
-              (collect-all-layers model))))
+    :layers ,(mapcar #'layer->plist (collect-all-layers model))))
 
 (defun plist->model (plist)
-  "从 plist 反序列化模型 (简化)."
-  ;; 完整实现需要根据 :type 动态构造
-  plist
-  )
+  "从 plist 反序列化模型（目前支持 sequential 容器与 dense/activation-layer 层）。"
+  (let ((model (make-sequential :name (getf plist :name))))
+    (dolist (l-plist (getf plist :layers))
+      (seq-add! model
+                (let ((lt (getf l-plist :type)))
+                  (ecase lt
+                    (dense
+                     (let ((d (make-dense (getf l-plist :out-dim)
+                                          :in-dim (getf l-plist :in-dim)
+                                          :activation (getf l-plist :activation)
+                                          :use-bias (getf l-plist :use-bias)
+                                          :name (getf l-plist :name))))
+                       (when (getf l-plist :weights)
+                         (setf (dense-weights d)
+                               (%restore-vt (getf l-plist :weights))))
+                       (when (getf l-plist :bias)
+                         (setf (dense-bias d)
+                               (%restore-vt (getf l-plist :bias))))
+                       d))
+                    (activation-layer
+                     (make-activation-layer (getf l-plist :kind)
+                                            :leaky-alpha (getf l-plist :leaky-alpha)
+                                            :name (getf l-plist :name)))
+                    (otherwise (error "plist->model: 不支持的层类型 ~a" lt))))))
+    model))
 
 (defun save-model (model filepath)
   "保存模型到文件."
@@ -260,7 +300,7 @@
     (print (model->plist model) out)))
 
 (defun load-model (filepath)
-  "从文件加载模型 (简化)."
+  "从文件加载模型."
   (with-open-file (in filepath)
     (plist->model (read in))))
 
@@ -424,6 +464,7 @@
          (out-slice-size (* effective-k tail-size))
          (flat-x (vt-flatten x))
          (data (vt-data flat-x))
+         (data-off (vt-offset flat-x))
          (total-out (reduce #'* out-shape))
          (result-vals
            (make-array total-out
@@ -439,7 +480,7 @@
             (let ((offset
                     (+ slice-start
                        (* i tail-size))))
-              (push (cons (aref data offset) i)
+              (push (cons (aref data (+ data-off offset)) i)
                     block-reps)))
           (setf block-reps
                 (sort block-reps #'> :key #'car))
@@ -455,7 +496,7 @@
                 (setf (aref result-vals
                             (+ dst-offset j))
                       (aref data
-                            (+ src-offset j)))
+                            (+ data-off src-offset j)))
                 (setf (aref result-idxs
                             (+ dst-offset j))
                       src-axis-idx)))))))

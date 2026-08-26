@@ -7,7 +7,7 @@
   (:nicknames #:neural-net #:clnn)
   (:import-from #:clvt
    ;; ---- 张量核心 ----
-   :vt :vt-p :vt-data :vt-shape :vt-element-type
+   :vt :vt-p :vt-data :vt-offset :vt-shape :vt-dtype :vt-element-type
        :vt-zeros :vt-ones :vt-ones-like :vt-zeros-like
        :vt-const :vt-arange :vt-random :vt-random-normal
        :vt-transpose :vt-reshape :vt-squeeze :vt-split
@@ -127,20 +127,8 @@
    :elastic-regularizer :make-elastic-regularizer
    :regularizer-penalty
 
-   ;; ============= 回调 =============
-   :callback :make-callback
-   :early-stopping :make-early-stopping
-   :model-checkpoint :make-model-checkpoint
-   :tensorboard-callback :make-tensorboard-callback
-   :lr-monitor :make-lr-monitor
-   :gradient-clip-callback :make-gradient-clip-callback
-   :callback-on-epoch-begin :callback-on-epoch-end
-   :callback-on-batch-begin :callback-on-batch-end
-   :callback-on-train-begin :callback-on-train-end
-
-   ;; ============= 训练器 =============
-   :trainer :make-trainer
-   :trainer-fit! :trainer-evaluate :trainer-predict
+   ;; 注：回调（callback/early-stopping 等）与训练器（trainer）尚未实现，
+   ;; 不再导出悬空符号，避免调用时报 undefined function。
 
    ;; ============= 序列化 =============
    :save-model :load-model

@@ -64,12 +64,12 @@
   (:method ((c t)) '()))
 
 (defgeneric grad-slots (component)
-  (:documentation "返回组件自身的梯度 slot reader 列表（每个元素是一个函数，
-接受组件实例，返回梯度 vt 或 nil；其 setf 可用于将梯度置 nil）。
+  (:documentation "返回组件自身的梯度 slot 名符号列表（每个元素是一个符号，
+即该组件中存储梯度张量的 slot 名，如 DW、DB）。
 容器层（sequential/residual/transformer-block）返回 nil，
 通过 zero-grad-children 递归子层；叶子层（dense/conv2d/lstm/...）
-返回自己的梯度 accessor 列表。用户自定义新层只需实现此方法，
-zero-grad! 即可自动正确清零其梯度，无需修改白名单。")
+返回自己的梯度 slot 名列表。zero-grad! 据此把对应 slot 置 nil。
+用户自定义新层只需实现此方法即可被正确清零，无需修改白名单。")
   (:method ((c t)) '()))
 
 (defgeneric update! (component optimizer)
@@ -159,6 +159,63 @@ GRAD-LIST = ((name . tensor) ...)"))
 
 (defgeneric regularizer-penalty (reg param-list)
   (:documentation "计算正则化惩罚项（标量）."))
+
+(defclass l1-regularizer (regularizer)
+  ((lambda :initarg :lambda
+           :initform 1.0d-4
+           :accessor l1-lambda
+           :type double-float))
+  (:documentation "L1 正则化：penalty = λ · Σ|w|。"))
+
+(defun make-l1-regularizer (&key (lambda 1.0d-4))
+  (make-instance 'l1-regularizer :lambda lambda :name "l1"))
+
+(defmethod regularizer-penalty ((reg l1-regularizer) param-list)
+  (* (l1-lambda reg)
+     (loop for p in param-list
+           for tensor = (third p)
+           sum (if tensor (vt-item (vt-sum (vt-abs tensor))) 0.0d0))))
+
+(defclass l2-regularizer (regularizer)
+  ((lambda :initarg :lambda
+           :initform 1.0d-4
+           :accessor l2-lambda
+           :type double-float))
+  (:documentation "L2 正则化：penalty = λ · Σw²。"))
+
+(defun make-l2-regularizer (&key (lambda 1.0d-4))
+  (make-instance 'l2-regularizer :lambda lambda :name "l2"))
+
+(defmethod regularizer-penalty ((reg l2-regularizer) param-list)
+  (* (l2-lambda reg)
+     (loop for p in param-list
+           for tensor = (third p)
+           sum (if tensor (vt-item (vt-sum (vt-square tensor))) 0.0d0))))
+
+(defclass elastic-regularizer (regularizer)
+  ((l1-lambda :initarg :l1-lambda
+              :initform 1.0d-4
+              :accessor elastic-l1-lambda
+              :type double-float)
+   (l2-lambda :initarg :l2-lambda
+              :initform 1.0d-4
+              :accessor elastic-l2-lambda
+              :type double-float))
+  (:documentation "弹性正则化：penalty = λ1 · Σ|w| + λ2 · Σw²。"))
+
+(defun make-elastic-regularizer (&key (l1-lambda 1.0d-4) (l2-lambda 1.0d-4))
+  (make-instance 'elastic-regularizer
+                 :l1-lambda l1-lambda :l2-lambda l2-lambda :name "elastic"))
+
+(defmethod regularizer-penalty ((reg elastic-regularizer) param-list)
+  (+ (* (elastic-l1-lambda reg)
+        (loop for p in param-list
+              for tensor = (third p)
+              sum (if tensor (vt-item (vt-sum (vt-abs tensor))) 0.0d0)))
+     (* (elastic-l2-lambda reg)
+        (loop for p in param-list
+              for tensor = (third p)
+              sum (if tensor (vt-item (vt-sum (vt-square tensor))) 0.0d0)))))
 
 (defclass stop-gradient-node ()
   ((input :initarg :input :reader sg-input))
