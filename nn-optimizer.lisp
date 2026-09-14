@@ -128,20 +128,16 @@
 					 bc2))
 			(new-p
                           (if (adam-amsgrad-p opt)
-                              (let ((v-max
-                                      (gethash key-vmax
-                                               registry
-                                               (vt-zeros
-						(vt-shape param)))))
-				(setf (gethash key-vmax registry)
-                                      (vt-map #'max
-                                              v-max v-hat))
+
+			      (let* ((v-max-old (gethash key-vmax registry
+							 (vt-zeros (vt-shape param))))
+				     (v-max (vt-map #'max v-max-old v-hat)))
+				(setf (gethash key-vmax registry) v-max)
 				(vt-- param
-                                      (vt-scale
-                                       (vt-/ m-hat
-                                             (vt-+ (vt-map #'sqrt v-max)
-                                                   eps))
-                                       lr)))
+				      (vt-scale
+				       (vt-/ m-hat
+					     (vt-+ (vt-map #'sqrt v-max) eps))
+				       lr)))
                               (vt-- param
                                     (vt-scale
                                      (vt-/ m-hat
@@ -246,6 +242,7 @@
         (eps (rmsprop-eps opt))
         (clip (optimizer-grad-clip opt))
         (mom (rmsprop-momentum opt))
+        (wd (optimizer-weight-decay opt))
         (registry (optimizer-state-registry opt)))
     (loop for p in param-list
           for (gname . grad) in grad-list
@@ -260,7 +257,10 @@
                       (key-mg (list base-key 'mg))
                       (key-buf (list base-key 'buf))
                       (g (clip-gradient grad clip))
-                      (sq (vt-square g))
+                      (g-reg (if (> wd 0.0d0)
+                                 (vt-+ g (vt-scale param wd))
+                                 g))
+                      (sq (vt-square g-reg))
                       (v (gethash key-v registry
                                   (vt-zeros (vt-shape param)))))
 		 ;; 更新平方梯度移动平均
@@ -274,7 +274,7 @@
                                       (vt-zeros (vt-shape param)))))
                      (setf (gethash key-mg registry)
                            (vt-+ (vt-scale mg alpha)
-				 (vt-scale g
+				 (vt-scale g-reg
                                            (- 1.0d0 alpha))))))
 		 ;; 计算分母
 		 (let* ((v-new (gethash key-v registry))
@@ -293,7 +293,7 @@
                                             (vt-zeros
                                              (vt-shape param))))
                               (new-buf (vt-+ (vt-scale buf mom)
-                                             (vt-/ g denom))))
+                                             (vt-/ g-reg denom))))
 			 (setf (gethash key-buf registry)
                                new-buf)
 			 (funcall setter
@@ -302,7 +302,7 @@
                        ;; 无动量
                        (funcall setter
 				(vt-- param
-                                      (vt-scale (vt-/ g denom)
+                                      (vt-scale (vt-/ g-reg denom)
 						lr)))))))))
 
 (defclass adagrad (optimizer)
@@ -326,6 +326,7 @@
   (let* ((lr (optimizer-lr opt))
          (eps (adagrad-eps opt))
          (clip (optimizer-grad-clip opt))
+         (wd (optimizer-weight-decay opt))
          (tt (incf (optimizer-step-count opt)))
          (registry (optimizer-state-registry opt)))
     (loop for p in param-list
@@ -339,6 +340,9 @@
             do (let* ((base-key (list owner name idx))
                       (key-v (list base-key 'v))
                       (g (clip-gradient grad clip))
+                      (g-reg (if (> wd 0.0d0)
+                                 (vt-+ g (vt-scale param wd))
+                                 g))
                       (eff-lr (/ lr (+ 1.0d0
                                        (* (adagrad-lr-decay opt)
 					  tt)))))
@@ -346,11 +350,11 @@
 		 (let ((v (gethash key-v registry
                                    (vt-zeros (vt-shape param)))))
                    (setf (gethash key-v registry)
-			 (vt-+ v (vt-square g))))
+			 (vt-+ v (vt-square g-reg))))
 		 ;; 更新参数
 		 (let* ((v (gethash key-v registry))
 			(new-p (vt-- param
-                                     (vt-scale (vt-/ g
+                                     (vt-scale (vt-/ g-reg
                                                      (vt-+
                                                       (vt-map #'sqrt v)
                                                       eps))

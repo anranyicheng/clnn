@@ -66,6 +66,7 @@
    ;; RNN 系列
    :rnn-cell :make-rnn-cell
    :lstm :make-lstm
+   :lstm-h-0 :lstm-c-0
    :gru :make-gru
    ;; 注意力
    :scaled-dot-product-attention :make-scaled-dot-product-attention

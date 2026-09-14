@@ -65,37 +65,33 @@
 
 
 (defmethod backward ((l embedding) grad-output)
-  "梯度累积到嵌入矩阵的对应行."
+  "梯度累积到嵌入矩阵的对应行。
+   当 scale-grad-by-freq 为 T 时，每个嵌入向量的梯度除以该索引在批次中出现的次数。"
   (let* ((indices (emb-indices-cache l))
          (ne (emb-num-embeddings l))
          (ed (emb-embedding-dim l))
          (idx-shape (vt-shape indices))
          (flat-size (reduce #'* idx-shape))
-         ;; 显式展平 indices，保证绝对是一维索引
-         (flat-idx
-           (vt-reshape indices (list flat-size)))
-         ;; 显式展平 grad-output 为 2D，防止高维越界
-         (flat-go
-           (vt-reshape grad-output (list flat-size ed)))
-         ;; 初始化梯度为全零
-         (dw-data
-           (make-array (list ne ed)
-                       :element-type 'double-float
-                       :initial-element 0.0d0)))
+         (flat-idx (vt-reshape indices (list flat-size)))
+         (flat-go  (vt-reshape grad-output (list flat-size ed)))
+         (freq (when (emb-scale-grad-by-freq l)
+                 (let ((ht (make-hash-table :test #'eql)))
+                   (dotimes (i flat-size)
+                     (let ((idx (coerce (vt-ref flat-idx i) 'fixnum)))
+                       (incf (gethash idx ht 0))))
+                   ht)))
+         (dw (or (emb-dw l)
+                 (vt-zeros (list ne ed)))))
     (dotimes (i flat-size)
-      (let ((idx-val
-              (coerce
-               (vt-ref flat-idx i)
-               'fixnum)))
+      (let* ((idx-val (coerce (vt-ref flat-idx i) 'fixnum))
+             (scale (if freq
+                        (/ 1.0d0 (coerce (gethash idx-val freq) 'double-float))
+                        1.0d0)))
         (dotimes (j ed)
-          (incf (aref dw-data idx-val j)
-                (coerce
-                 (vt-ref flat-go i j)
-                 'double-float)))))
-    (setf (emb-dw l)
-          (vt-reshape
-           (vt-from-array dw-data)
-           (list ne ed)))
+          (setf (vt-ref dw idx-val j)
+                (+ (vt-ref dw idx-val j)
+                   (* scale (coerce (vt-ref flat-go i j) 'double-float)))))))
+    (setf (emb-dw l) dw)
     nil))
 
 (defmethod params ((l embedding))

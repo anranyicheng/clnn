@@ -294,13 +294,12 @@
          (final-lr (/ max-lr final-div))
          (new-lr
            (cond
-             ;; 上升阶段
-             ((< step start-step)
+             ((and (> start-step 0) (< step start-step))
               (+ base
                  (* (- max-lr base)
                     (/ step start-step 1.0d0))))
-             ;; 下降阶段
-             ((<= step total)
+             ;; 下降阶段 (total=start-step 时直接跳到底)
+             ((and (> total start-step) (<= step total))
               (let* ((progress
                        (/ (- step start-step)
                           (- total start-step)
@@ -309,7 +308,7 @@
                 (+ final-lr
                    (* (- max-lr final-lr)
                       (* 0.5d0 (+ 1.0d0 cos-val))))))
-             ;; 超出总步数
+             ;; 超出总步数或退化情况
              (t final-lr))))
     (setf (optimizer-lr (scheduler-optimizer s)) new-lr)
     (setf (scheduler-last-lr s) new-lr)))

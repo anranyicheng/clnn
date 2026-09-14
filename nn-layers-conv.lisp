@@ -271,7 +271,7 @@
          (oh (1+ (floor (- (+ in-h (* 2 ph)) kh) sh)))
          (ow (1+ (floor (- (+ in-w (* 2 pw)) kw) sw)))
          (in-data (vt-data input))
-
+	 (in-off  (vt-offset input))
          (out-total (* batch channels oh ow))
          (out-data (make-array out-total :element-type 'double-float :initial-element 0.0d0))
          ;; mask: row-major linear index into input (-1 means all-pad position)
@@ -290,7 +290,7 @@
                           (iw (- (+ (* j sw) kj) pw)))
                       (when (and (<= 0 ih) (< ih in-h) (<= 0 iw) (< iw in-w))
                         (let* ((ri (lin-idx b c ih iw))
-                              (val (aref in-data ri)))
+                               (val (aref in-data (+ in-off ri))))
                           (when (> val max-val)
                             (setf max-val val
                                   max-ri ri)))))))
@@ -314,10 +314,11 @@
          (in-total (reduce #'* shape))
          (out-total (* batch channels oh ow))
          (go-data (vt-data grad-output))
+	 (go-off  (vt-offset grad-output))
          (dx-data (make-array in-total :element-type 'double-float :initial-element 0.0d0)))
     (dotimes (oi out-total)
       (let ((ri (aref mask oi))
-            (gv (aref go-data oi)))
+            (gv (aref go-data (+ go-off oi))))
         (when (>= ri 0)
           (incf (aref dx-data ri) gv))))
     (let ((dx (vt-from-sequence (coerce dx-data 'list) :dtype :float64)))
@@ -467,6 +468,9 @@
   (let ((slots '(dw)))
     (when (conv-use-bias-p l) (push 'db slots))
     slots))
+
 (defmethod grad-slots ((l max-pool2d)) '())
+
 (defmethod grad-slots ((l avg-pool2d)) '())
+
 (defmethod grad-slots ((l global-avg-pool2d)) '())

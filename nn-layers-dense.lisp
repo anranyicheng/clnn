@@ -56,10 +56,6 @@
      (if (and (>= v -2.5d0) (<= v 2.5d0)) 0.2d0 0.0d0))
    x))
 
-(defun vt-softmax-derivative (s)
-  "Softmax 导数简化近似."
-  (vt-* s (vt-- 1.0d0 s)))
-
 (defun vt-mish-derivative (x)
   "mish 的精确导数."
   (let* ((sp (vt-softplus x))
@@ -275,9 +271,10 @@
     ;; 计算输入梯度并还原形状
     (let ((d-x-flat (vt-matmul d-activation
                                (vt-transpose w))))
-      (if (<= rank 2)
-          d-x-flat
-          (vt-reshape d-x-flat orig-shape)))))
+      (cond
+	((= rank 1) (vt-reshape d-x-flat orig-shape))     ; (1, d) -> (d,)
+	((= rank 2) d-x-flat)                              ; 形状本就匹配
+	(t          (vt-reshape d-x-flat orig-shape))))))
 
 
 (defmethod params ((l dense))
@@ -478,5 +475,7 @@
   (let ((slots '(dw)))
     (when (dense-use-bias-p l) (push 'db slots))
     slots))
+
 (defmethod grad-slots ((l activation-layer)) '())
+
 (defmethod grad-slots ((l flatten)) '())

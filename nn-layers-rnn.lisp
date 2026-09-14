@@ -175,15 +175,25 @@
 	     :accessor lstm-dbias-hh)
    (cache :initarg :cache
 	  :initform nil
-	  :accessor lstm-cache))
-  (:documentation "LSTM"))
+	  :accessor lstm-cache)
+   ;; 外部可注入的初始状态
+   (h-0 :initarg :h-0 :initform nil
+	:accessor lstm-h-0 :type (or null vt)
+	:documentation
+	"可选的初始隐藏状态 h_0, 形状 (batch, hidden-size). NIL 则用零.")
+   (c-0 :initarg :c-0 :initform nil
+	:accessor lstm-c-0 :type (or null vt)
+	:documentation
+	"可选的初始细胞状态 c_0, 形状 (batch, hidden-size). NIL 则用零."))
+  (:documentation "LSTM. 支持可选的外部初始状态 (h-0, c-0)."))
 
 (defun make-lstm (input-size hidden-size
-                  &key (name "lstm") (trainable t))
+                  &key (name "lstm") (trainable t) h-0 c-0)
   (make-instance 'lstm
 		 :input-size input-size
 		 :hidden-size hidden-size
-		 :name name :trainable trainable))
+		 :name name :trainable trainable
+		 :h-0 h-0 :c-0 c-0))
 
 (defun ensure-lstm-params (l)
   (unless (lstm-weight-ih l)
@@ -216,8 +226,9 @@
          (whh (lstm-weight-hh l))
          (bih (lstm-bias-ih l))
          (bhh (lstm-bias-hh l))
-         (h (vt-zeros (list batch hs)))
-         (c (vt-zeros (list batch hs)))
+         ;; 支持外部注入的初始状态，否则用零
+         (h (or (lstm-h-0 l) (vt-zeros (list batch hs))))
+         (c (or (lstm-c-0 l) (vt-zeros (list batch hs))))
          (output (vt-zeros (list batch seq-len hs)))
          (all-gates '()) (all-c '())
          (all-h '()) (all-x '()))
@@ -275,7 +286,10 @@
          (dh-next (vt-zeros (list batch hs)))
          (dc-next (vt-zeros (list batch hs)))
          (grad-input (vt-zeros (list batch seq-len is)))
-         (zero-h (vt-zeros (list batch hs))))
+         (zero-h (vt-zeros (list batch hs)))
+         ;; 使用用户提供的初始状态（若有）
+         (h-0 (or (lstm-h-0 l) zero-h))
+         (c-0 (or (lstm-c-0 l) zero-h)))
     (dotimes (i seq-len)
       (let* ((idx (- seq-len i 1))
              (gates (nth idx all-gates))
@@ -284,7 +298,7 @@
              (g-gate (third gates))
              (o-gate (fourth gates))
              (c-prev (if (= idx 0)
-                         zero-h
+                         c-0
                          (nth (1- idx) all-c)))
              (c-cur (nth idx all-c))
              (x-t (nth idx all-x))
@@ -307,7 +321,7 @@
               (vt-+ dwih-acc
                     (vt-matmul (vt-transpose d-gates) x-t)))
         (let ((h-prev (if (= idx 0)
-                          zero-h
+                          h-0
                           (nth (1- idx) all-h))))
           (setf dwhh-acc
                 (vt-+ dwhh-acc
@@ -600,7 +614,9 @@
 
 ;; ---- grad-slots ----
 (defmethod grad-slots ((l rnn-cell)) '(dwih dwhh dbih))
+
 (defmethod grad-slots ((l lstm))
   '(dweight-ih dweight-hh dbias-ih dbias-hh))
+
 (defmethod grad-slots ((l gru))
   '(dweight-ih dweight-hh dbias-ih dbias-hh))

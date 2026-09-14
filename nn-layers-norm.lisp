@@ -25,7 +25,6 @@
 		 :p p :inverted inverted
 		 :name name :trainable nil))
 
-
 (defmethod forward ((l dropout) input)
   (if (training-p l)
       (let ((p (dropout-p l)))
@@ -110,7 +109,10 @@
 
 (defun bn-permute-to-channel-last (shape)
   "Permutation to move axis=1 (C) to last: (N,C,H,W) -> (N,H,W,C), i.e. perm (0,2,3,...,1)."
-  (append (list 0) (loop for i from 2 below (length shape) collect i) (list 1)))
+  (append (list 0)
+	  (loop for i from 2 below (length shape)
+		collect i)
+	  (list 1)))
 
 (defun bn-invert-perm (perm)
   (let* ((n (length perm))
@@ -136,13 +138,22 @@
               (let* ((mean-r (vt-mean input :axis 0 :keepdims t))
                      (diff (vt-- input mean-r))
                      (var-r (vt-mean (vt-square diff) :axis 0 :keepdims t))
-                     (std-inv (vt-map (lambda (v) (/ 1.0d0 (sqrt (+ v eps)))) var-r))
+                     (std-inv (vt-map (lambda (v)
+					(/ 1.0d0 (sqrt (+ v eps))))
+				      var-r))
                      (xhat (vt-* diff std-inv)))
                 (setf (bn-xhat-cache l) xhat)
                 (setf (bn-std-inv-cache l) std-inv)
-                (let ((m (bn-momentum l)))
-                  (setf (bn-running-mean l) (vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m)) (vt-scale (vt-reshape mean-r (list nf)) m)))
-                  (setf (bn-running-var l) (vt-+ (vt-scale (bn-running-var l) (- 1.0d0 m)) (vt-scale (vt-reshape var-r (list nf)) m))))
+                (let ((m (bn-momentum l))
+                      ;; Bessel 校正: 无偏方差 = 有偏方差 * N/(N-1)
+                      (bessel (/ (coerce batch 'double-float)
+                                 (coerce (1- batch) 'double-float))))
+                  (setf (bn-running-mean l)
+			(vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m))
+			      (vt-scale (vt-reshape mean-r (list nf)) m)))
+                  (setf (bn-running-var l)
+			(vt-+ (vt-scale (bn-running-var l) (- 1.0d0 m))
+			      (vt-scale (vt-scale (vt-reshape var-r (list nf)) bessel) m))))
                 (if (bn-affine-p l) (vt-+ (vt-* (bn-gamma l) xhat) (bn-beta l)) xhat))
               (let* ((rm (vt-reshape (bn-running-mean l) (list 1 nf)))
                      (rv (vt-reshape (bn-running-var l) (list 1 nf)))
@@ -162,23 +173,36 @@
               (let* ((mean-r (vt-mean two-d :axis 0 :keepdims t))
                      (diff (vt-- two-d mean-r))
                      (var-r (vt-mean (vt-square diff) :axis 0 :keepdims t))
-                     (std-inv-r (vt-map (lambda (v) (/ 1.0d0 (sqrt (+ v eps)))) var-r))
+                     (std-inv-r (vt-map (lambda (v)
+					  (/ 1.0d0 (sqrt (+ v eps))))
+					var-r))
                      (xhat-2d (vt-* diff std-inv-r))
                      (mean-v (vt-reshape mean-r (list nf)))
                      (var-v (vt-reshape var-r (list nf))))
                 (setf (bn-xhat-cache l) xhat-2d)
                 (setf (bn-std-inv-cache l) std-inv-r)
-                (let ((m (bn-momentum l)))
-                  (setf (bn-running-mean l) (vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m)) (vt-scale mean-v m)))
-                  (setf (bn-running-var l) (vt-+ (vt-scale (bn-running-var l) (- 1.0d0 m)) (vt-scale var-v m))))
-                (let* ((y-2d (if (bn-affine-p l) (vt-+ (vt-* xhat-2d (bn-gamma l)) (bn-beta l)) xhat-2d))
+                (let ((m (bn-momentum l))
+                      ;; Bessel 校正: 无偏方差 = 有偏方差 * N/(N-1)
+                      (bessel (/ (coerce spatial 'double-float)
+                                 (coerce (1- spatial) 'double-float))))
+                  (setf (bn-running-mean l)
+			(vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m))
+			      (vt-scale mean-v m)))
+                  (setf (bn-running-var l)
+			(vt-+ (vt-scale (bn-running-var l) (- 1.0d0 m))
+			      (vt-scale (vt-scale var-v bessel) m))))
+                (let* ((y-2d (if (bn-affine-p l)
+				 (vt-+ (vt-* xhat-2d (bn-gamma l)) (bn-beta l))
+				 xhat-2d))
                        (y-t (vt-reshape y-2d tshape))
                        (y (vt-transpose y-t inv-perm))) y))
               (let* ((mean-v (vt-reshape (bn-running-mean l) (list 1 nf)))
                      (var-v (vt-reshape (bn-running-var l) (list 1 nf)))
                      (std-inv (vt-map (lambda (v) (/ 1.0d0 (sqrt (+ v eps)))) var-v))
                      (xhat-2d (vt-* (vt-- two-d mean-v) std-inv))
-                     (y-2d (if (bn-affine-p l) (vt-+ (vt-* xhat-2d (bn-gamma l)) (bn-beta l)) xhat-2d))
+                     (y-2d (if (bn-affine-p l)
+			       (vt-+ (vt-* xhat-2d (bn-gamma l)) (bn-beta l))
+			       xhat-2d))
                      (y-t (vt-reshape y-2d tshape))
                      (y (vt-transpose y-t inv-perm))) y))))))
 
@@ -194,7 +218,9 @@
             (setf (bn-dbeta l) (vt-sum grad-output :axis 0)))
           (let* ((sum-dxhat (vt-sum dxhat :axis 0 :keepdims t))
                  (sum-dxhat-xhat (vt-sum (vt-* dxhat xhat) :axis 0 :keepdims t))
-                 (dx (vt-* std-inv (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat) (vt-* xhat sum-dxhat-xhat)) (/ 1.0d0 n)))))
+                 (dx (vt-* std-inv (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat)
+						   (vt-* xhat sum-dxhat-xhat))
+					     (/ 1.0d0 n)))))
             dx))
         (destructuring-bind (orig-input inv-perm tshape) cache
           (declare (ignore orig-input))
@@ -206,13 +232,16 @@
                  (n (coerce (bn-batch-size l) 'double-float))
                  (xhat (bn-xhat-cache l))
                  (std-inv-r (bn-std-inv-cache l))
-                 (dxhat (if (bn-affine-p l) (vt-* g2d (vt-reshape (bn-gamma l) (list 1 nf))) g2d)))
+                 (dxhat (if (bn-affine-p l)
+			    (vt-* g2d (vt-reshape (bn-gamma l) (list 1 nf))) g2d)))
             (when (bn-affine-p l)
               (setf (bn-dgamma l) (vt-sum (vt-* g2d xhat) :axis 0))
               (setf (bn-dbeta l) (vt-sum g2d :axis 0)))
             (let* ((sum-dxhat (vt-sum dxhat :axis 0 :keepdims t))
                    (sum-dxhat-xhat (vt-sum (vt-* dxhat xhat) :axis 0 :keepdims t))
-                   (dx2d (vt-* std-inv-r (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat) (vt-* xhat sum-dxhat-xhat)) (/ 1.0d0 n))))
+                   (dx2d (vt-* std-inv-r (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat)
+							 (vt-* xhat sum-dxhat-xhat))
+						   (/ 1.0d0 n))))
                    (dx-t (vt-reshape dx2d tshape))
                    (dx (vt-transpose dx-t inv-perm))) dx))))))
 
@@ -319,26 +348,30 @@
                grad-output))
          (flat-shape
            (append (subseq shape 0 start-axis)
-                   (list d))))
+                   (list d)))
+         ;; 将 std-inv reshape 为 flat 形状，避免 norm-rank>1 时广播错误
+         (std-inv-flat
+           (vt-reshape std-inv
+                       (append (subseq shape 0 start-axis)
+                               (list 1)))))
     (when (ln-affine-p l)
       (let* ((dxhat-flat (vt-reshape dxhat flat-shape))
              (xhat-flat (vt-reshape xhat flat-shape))
+             (batch-axes (loop for i below start-axis collect i))
              (dgamma-flat
-               (vt-sum (vt-* dxhat-flat xhat-flat)
-                       :axis -1 :keepdims nil))
+               (if batch-axes
+                   (apply #'vt-sum (vt-* dxhat-flat xhat-flat)
+                          :keepdims nil
+			  :axis batch-axes)
+                   (vt-* dxhat-flat xhat-flat)))
              (dbeta-flat
-               (vt-sum dxhat-flat
-                       :axis -1 :keepdims nil)))
-        (setf (ln-dgamma l)
-              (if (> start-axis 0)
-                  (vt-sum dgamma-flat
-                          :axis 0 :keepdims nil)
-                  dgamma-flat))
-        (setf (ln-dbeta l)
-              (if (> start-axis 0)
-                  (vt-sum dbeta-flat
-                          :axis 0 :keepdims nil)
-                  dbeta-flat))))
+               (if batch-axes
+                   (apply #'vt-sum dxhat-flat
+                          :keepdims nil
+			  :axis batch-axes)
+                   dxhat-flat)))
+        (setf (ln-dgamma l) dgamma-flat)
+        (setf (ln-dbeta l) dbeta-flat)))
 
     (let* ((dxhat-flat (vt-reshape dxhat flat-shape))
            (xhat-flat (vt-reshape xhat flat-shape))
@@ -348,9 +381,10 @@
            (sum-dxhat-xhat
              (vt-sum (vt-* dxhat-flat xhat-flat)
                      :axis -1 :keepdims t))
+           ;; 使用 std-inv-flat (batch_dims..., 1) 与 flat 形状广播
            (dx-flat
              (vt-*
-              std-inv
+              std-inv-flat
               (vt-scale
                (vt--
                 (vt-- (vt-scale dxhat-flat d)
@@ -378,7 +412,23 @@
 
 ;; ---- grad-slots ----
 (defmethod grad-slots ((l dropout)) '())
+
 (defmethod grad-slots ((l batch-norm))
   (if (bn-affine-p l) '(dgamma dbeta) '()))
+
 (defmethod grad-slots ((l layer-norm))
   (if (ln-affine-p l) '(dgamma dbeta) '()))
+
+(defmethod params ((l batch-norm))
+  (if (bn-affine-p l)
+      (list (list l "gamma" (bn-gamma l)
+                  #'(lambda (v) (setf (bn-gamma l) v)))
+            (list l "beta" (bn-beta l)
+                  #'(lambda (v) (setf (bn-beta l) v))))
+      '()))
+
+(defmethod grads ((l batch-norm))
+  (if (bn-affine-p l)
+      (list (cons "gamma" (bn-dgamma l))
+            (cons "beta"  (bn-dbeta  l)))
+      '()))
