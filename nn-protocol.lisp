@@ -72,6 +72,18 @@
 用户自定义新层只需实现此方法即可被正确清零，无需修改白名单。")
   (:method ((c t)) '()))
 
+(defgeneric cache-slots (component)
+  (:documentation "返回组件自身需要在前向传播结束后清空的缓存 slot 名符号列表。
+设计原则与 grad-slots 完全同构：
+  - 容器层（sequential / residual / transformer-block）返回 '()，
+    由 clear-forward-cache! 负责递归子层；
+  - 叶子层（dense / conv2d / lstm / ...）显式列出自己持有的前向缓存 slot；
+  - 用户自定义新层只需实现此方法即可被正确清理，无需修改任何字符串白名单。
+注意：只列出『前向结束后可以丢弃的中间缓存』。
+     反向传播依赖的整型/配置状态（如 batch-norm 的 BATCH-SIZE、
+     layer-norm 的 NORM-SIZE、rnn-cell 的 STATE）不属于缓存，不要列入。")
+  (:method ((c t)) '()))
+
 (defgeneric update! (component optimizer)
   (:documentation "使用优化器更新参数.")
   (:method ((c t) optimizer)

@@ -499,3 +499,6 @@
     (when (mha-use-bias-p l)
       (setf slots (nconc slots '(db-q db-k db-v db-o))))
     slots))
+
+(defmethod cache-slots ((l multi-head-attention))
+  '(cache))

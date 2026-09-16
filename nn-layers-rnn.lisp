@@ -620,3 +620,13 @@
 
 (defmethod grad-slots ((l gru))
   '(dweight-ih dweight-hh dbias-ih dbias-hh))
+
+(defmethod cache-slots ((l rnn-cell))
+  ;; 注意：不含 state（链式调用状态，由 reset-rnn-cell-state! 单独管理）
+  '(input-cache h-prev-cache h-cache))
+
+(defmethod cache-slots ((l lstm))
+  '(cache))
+
+(defmethod cache-slots ((l gru))
+  '(cache))

@@ -474,3 +474,15 @@
 (defmethod grad-slots ((l avg-pool2d)) '())
 
 (defmethod grad-slots ((l global-avg-pool2d)) '())
+
+(defmethod cache-slots ((l conv2d))
+  '(input-cache col-cache output-shape-cache))
+
+(defmethod cache-slots ((l max-pool2d))
+  '(cache))
+
+(defmethod cache-slots ((l avg-pool2d))
+  '(input-cache))
+
+(defmethod cache-slots ((l global-avg-pool2d))
+  '(cache-shape))

@@ -106,3 +106,6 @@
 
 ;; ---- grad-slots ----
 (defmethod grad-slots ((l embedding)) '(dw))
+
+(defmethod cache-slots ((l embedding))
+  '(indices-cache))

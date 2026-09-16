@@ -479,3 +479,13 @@
 (defmethod grad-slots ((l activation-layer)) '())
 
 (defmethod grad-slots ((l flatten)) '())
+
+;; ---- cache-slots (clear-forward-cache! 基础) ----
+(defmethod cache-slots ((l dense))
+  '(input-cache z-cache a-cache))
+
+(defmethod cache-slots ((l activation-layer))
+  '(z-cache a-cache))
+
+(defmethod cache-slots ((l flatten))
+  '(cache))

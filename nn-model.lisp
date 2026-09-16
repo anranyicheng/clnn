@@ -357,84 +357,259 @@
               value)
         (return-from set-slot-value-by-name)))))
 
-(defun copy-network (source)
-  "深拷贝网络，保留所有可学习参数、激活类型和运行统计量。"
-  (let ((new-model
-          (etypecase source
-            (sequential
-             (make-sequential
-              :name (concatenate 'string (layer-name source) "-copy")))
-            (layer
-             (let ((class (class-of source)))
-               (cond
-                 ;; Dense 层
-                 ((eq class (find-class 'dense))
-                  (make-dense (dense-out-dim source)
-                              :in-dim (dense-in-dim source)
-                              :activation (dense-activation source)
-                              :use-bias (dense-use-bias-p source)
-                              :leaky-alpha (dense-leaky-alpha source)
-                              :name (concatenate 'string (layer-name source) "-copy")
-                              :trainable (layer-trainable-p source)))
-                 ;; Conv2d 层
-                 ((eq class (find-class 'conv2d))
-                  (make-conv2d (conv-out-channels source)
-                               (conv-kernel-size source)
-                               :in-channels (conv-in-channels source)
-                               :stride (conv-stride source)
-                               :padding (conv-padding source)
-                               :use-bias (conv-use-bias-p source)
-                               :name (concatenate 'string (layer-name source) "-copy")
-                               :trainable (layer-trainable-p source)))
-                 ;; BatchNorm 层
-                 ((eq class (find-class 'batch-norm))
-                  (make-batch-norm (bn-num-features source)
-                                   :eps (bn-eps source)
-                                   :momentum (bn-momentum source)
-                                   :affine (bn-affine-p source)
-                                   :name (concatenate 'string (layer-name source) "-copy")
-                                   :trainable (layer-trainable-p source)))
-                 ;; LayerNorm 层
-                 ((eq class (find-class 'layer-norm))
-                  (make-layer-norm (ln-normalized-shape source)
-                                   :eps (ln-eps source)
-                                   :affine (ln-affine-p source)
-                                   :name (concatenate 'string (layer-name source) "-copy")
-                                   :trainable (layer-trainable-p source)))
-                 ;; 其他层（激活层、dropout、池化层等）直接复制，保留原有构造函数
-                 (t
-                  (make-instance class
-                                 :name (concatenate 'string (layer-name source) "-copy")
-                                 :trainable (layer-trainable-p source)))))))))
-    ;; 递归复制子层（Sequential）
-    (when (typep source 'sequential)
-      (dolist (orig (seq-layers source))
-        (seq-add! new-model (copy-network orig))))
-    ;; 非容器层：复制权重、偏置、运行统计量
-    (unless (or (typep source 'sequential)
-                (typep source 'residual)
-                (typep source 'transformer-block))
-      (dolist (pname '("weights" "bias" "weight"
-                       "gamma" "beta"
-                       "w-q" "w-k" "w-v" "w-o"
-                       "b-q" "b-k" "b-v" "b-o"
-                       "weight-ih" "weight-hh"
-                       "bias-ih" "bias-hh"
-                       "wih" "whh" "bih"
-                       ;; embedding 的 weight
-                       "weight"))
-        (when (slot-exists-p-by-name source pname)
-          (let ((src-val (find-slot-value source pname)))
-            (when (and src-val (vt-p src-val))
-              (set-slot-value-by-name new-model pname (vt-copy src-val)))))))
-    ;; BatchNorm 额外复制 running-mean / running-var
-    (when (typep source 'batch-norm)
-      (dolist (stat '("running-mean" "running-var"))
-        (when (slot-exists-p-by-name source stat)
-          (let ((src-val (find-slot-value source stat)))
-            (when (and src-val (vt-p src-val))
-              (set-slot-value-by-name new-model stat (vt-copy src-val)))))))
-    new-model))
+;;; ------------------------------------------------------------------
+;;; copy-network：基于 CLOS 泛型分发的深拷贝
+;;; ------------------------------------------------------------------
+;;; 每种层通过自己的 copy-network 方法决定复制哪些字段；
+;;; 容器层递归子层；未识别的层落到 layer 兜底分支。
+;;;
+;;; 使用 CLOS 分发（不是 typecase），新增层只需加一个方法，
+;;; 不需要修改 copy-network 本身。
+
+(defun copy-layer-name (source)
+  "给源层生成副本名（原名 + \"-copy\"）。"
+  (concatenate 'string (layer-name source) "-copy"))
+
+(defgeneric copy-network (source)
+  (:documentation "深拷贝网络/层。
+
+  返回一个与 SOURCE 结构、配置、可学习参数、运行统计量一致，
+  但底层张量完全独立的新对象。
+
+  每种层通过自己的 copy-network 方法决定复制哪些字段；
+  用户自定义层若不实现自己的方法，将落到 layer 兜底分支
+  （只保留 name/trainable，不复制任何张量）。
+
+  容器层（sequential / residual / transformer-block）递归子层。")
+  ;; ---- 兜底：未知层只复制 name/trainable ----
+  (:method ((source layer))
+    (make-instance (class-of source)
+                   :name (copy-layer-name source)
+                   :trainable (layer-trainable-p source)))
+  ;; ---- 非层对象：直接返回自身 ----
+  (:method ((source t)) source))
+
+;;; ---------- 容器层 ----------
+
+(defmethod copy-network ((source sequential))
+  (let ((copy (make-sequential :name (copy-layer-name source))))
+    (dolist (layer (seq-layers source))
+      (seq-add! copy (copy-network layer)))
+    copy))
+
+(defmethod copy-network ((source residual))
+  (make-residual (copy-network (residual-block source))
+                 :name (copy-layer-name source)))
+
+(defmethod copy-network ((source transformer-block))
+  (let ((copy (make-transformer-block
+               (tb-embed-dim source)
+               (tb-num-heads source)
+               :ffn-dim (tb-ffn-dim source)
+               :dropout-rate (tb-dropout-rate source)
+               :eps (tb-eps source)
+               :name (copy-layer-name source)
+               :trainable (layer-trainable-p source))))
+    ;; 用深拷贝覆盖构造时自动创建的子层
+    (setf (tb-mha  copy) (copy-network (tb-mha  source))
+          (tb-ffn1 copy) (copy-network (tb-ffn1 source))
+          (tb-ffn2 copy) (copy-network (tb-ffn2 source))
+          (tb-ln1  copy) (copy-network (tb-ln1  source))
+          (tb-ln2  copy) (copy-network (tb-ln2  source)))
+    ;; drop1/drop2 无状态，构造时已按同一 dropout-rate 创建，无需替换
+    copy))
+
+;;; ---------- 全连接 / 卷积 / 池化 ----------
+
+(defmethod copy-network ((source dense))
+  (let ((copy (make-dense (dense-out-dim source)
+                          :in-dim (dense-in-dim source)
+                          :activation (dense-activation source)
+                          :use-bias (dense-use-bias-p source)
+                          :leaky-alpha (dense-leaky-alpha source)
+                          :name (copy-layer-name source)
+                          :trainable (layer-trainable-p source))))
+    (when (dense-weights source)
+      (setf (dense-weights copy) (vt-copy (dense-weights source))))
+    (when (dense-bias source)
+      (setf (dense-bias copy) (vt-copy (dense-bias source))))
+    copy))
+
+(defmethod copy-network ((source conv2d))
+  (let ((copy (make-conv2d (conv-out-channels source)
+                           (conv-kernel-size source)
+                           :in-channels (conv-in-channels source)
+                           :stride (conv-stride source)
+                           :padding (conv-padding source)
+                           :use-bias (conv-use-bias-p source)
+                           :weight-init (conv-weight-init source)
+                           :name (copy-layer-name source)
+                           :trainable (layer-trainable-p source))))
+    (when (conv-weights source)
+      (setf (conv-weights copy) (vt-copy (conv-weights source))))
+    (when (conv-bias source)
+      (setf (conv-bias copy) (vt-copy (conv-bias source))))
+    copy))
+
+(defmethod copy-network ((source max-pool2d))
+  (make-max-pool2d (pool-kernel-size source)
+                   :stride (pool-stride source)
+                   :padding (pool-padding source)
+                   :name (copy-layer-name source)
+                   :trainable (layer-trainable-p source)))
+
+(defmethod copy-network ((source avg-pool2d))
+  (make-avg-pool2d (apool-kernel-size source)
+                   :stride (apool-stride source)
+                   :padding (apool-padding source)
+                   :name (copy-layer-name source)
+                   :trainable (layer-trainable-p source)))
+
+(defmethod copy-network ((source global-avg-pool2d))
+  (make-global-avg-pool2d :name (copy-layer-name source)
+                          :trainable (layer-trainable-p source)))
+
+;;; ---------- 归一化 / Dropout ----------
+
+(defmethod copy-network ((source batch-norm))
+  (let ((copy (make-batch-norm (bn-num-features source)
+                               :eps (bn-eps source)
+                               :momentum (bn-momentum source)
+                               :affine (bn-affine-p source)
+                               :name (copy-layer-name source)
+                               :trainable (layer-trainable-p source))))
+    ;; 可学习参数
+    (when (bn-gamma source)
+      (setf (bn-gamma copy) (vt-copy (bn-gamma source))))
+    (when (bn-beta source)
+      (setf (bn-beta copy) (vt-copy (bn-beta source))))
+    ;; 运行时统计量
+    (when (bn-running-mean source)
+      (setf (bn-running-mean copy) (vt-copy (bn-running-mean source))))
+    (when (bn-running-var source)
+      (setf (bn-running-var copy) (vt-copy (bn-running-var source))))
+    copy))
+
+(defmethod copy-network ((source layer-norm))
+  (let ((copy (make-layer-norm (ln-normalized-shape source)
+                               :eps (ln-eps source)
+                               :affine (ln-affine-p source)
+                               :name (copy-layer-name source)
+                               :trainable (layer-trainable-p source))))
+    (when (ln-gamma source)
+      (setf (ln-gamma copy) (vt-copy (ln-gamma source))))
+    (when (ln-beta source)
+      (setf (ln-beta copy) (vt-copy (ln-beta source))))
+    copy))
+
+(defmethod copy-network ((source dropout))
+  (make-dropout (dropout-p source)
+                :name (copy-layer-name source)
+                :inverted (dropout-inverted-p source)))
+
+;;; ---------- 激活 / Flatten ----------
+
+(defmethod copy-network ((source activation-layer))
+  (make-activation-layer (activation-kind source)
+                         :leaky-alpha (act-leaky-alpha source)
+                         :name (copy-layer-name source)))
+
+(defmethod copy-network ((source flatten))
+  (make-flatten :start-dim (flatten-start-dim source)
+                :name (copy-layer-name source)))
+
+;;; ---------- Embedding ----------
+
+(defmethod copy-network ((source embedding))
+  (let ((copy (make-embedding (emb-num-embeddings source)
+                              (emb-embedding-dim source)
+                              :max-norm (emb-max-norm source)
+                              :scale-grad-by-freq
+                              (emb-scale-grad-by-freq source)
+                              :name (copy-layer-name source)
+                              :trainable (layer-trainable-p source))))
+    (when (emb-weight source)
+      (setf (emb-weight copy) (vt-copy (emb-weight source))))
+    copy))
+
+;;; ---------- 循环层 ----------
+
+(defmethod copy-network ((source rnn-cell))
+  (let ((copy (make-rnn-cell (rnn-input-size source)
+                             (rnn-hidden-size source)
+                             :activation (rnn-activation source)
+                             :name (copy-layer-name source)
+                             :trainable (layer-trainable-p source))))
+    (when (rnn-wih source) (setf (rnn-wih copy) (vt-copy (rnn-wih source))))
+    (when (rnn-whh source) (setf (rnn-whh copy) (vt-copy (rnn-whh source))))
+    (when (rnn-bih source) (setf (rnn-bih copy) (vt-copy (rnn-bih source))))
+    copy))
+
+(defmethod copy-network ((source lstm))
+  (let ((copy (make-lstm (lstm-input-size source)
+                         (lstm-hidden-size source)
+                         :name (copy-layer-name source)
+                         :trainable (layer-trainable-p source)
+                         :h-0 (and (lstm-h-0 source)
+                                   (vt-copy (lstm-h-0 source)))
+                         :c-0 (and (lstm-c-0 source)
+                                   (vt-copy (lstm-c-0 source))))))
+    (when (lstm-weight-ih source)
+      (setf (lstm-weight-ih copy) (vt-copy (lstm-weight-ih source))))
+    (when (lstm-weight-hh source)
+      (setf (lstm-weight-hh copy) (vt-copy (lstm-weight-hh source))))
+    (when (lstm-bias-ih source)
+      (setf (lstm-bias-ih copy) (vt-copy (lstm-bias-ih source))))
+    (when (lstm-bias-hh source)
+      (setf (lstm-bias-hh copy) (vt-copy (lstm-bias-hh source))))
+    copy))
+
+(defmethod copy-network ((source gru))
+  (let ((copy (make-gru (gru-input-size source)
+                        (gru-hidden-size source)
+                        :name (copy-layer-name source)
+                        :trainable (layer-trainable-p source))))
+    (when (gru-weight-ih source)
+      (setf (gru-weight-ih copy) (vt-copy (gru-weight-ih source))))
+    (when (gru-weight-hh source)
+      (setf (gru-weight-hh copy) (vt-copy (gru-weight-hh source))))
+    (when (gru-bias-ih source)
+      (setf (gru-bias-ih copy) (vt-copy (gru-bias-ih source))))
+    (when (gru-bias-hh source)
+      (setf (gru-bias-hh copy) (vt-copy (gru-bias-hh source))))
+    copy))
+
+;;; ---------- 注意力 ----------
+
+(defmethod copy-network ((source multi-head-attention))
+  (let ((copy (make-multi-head-attention
+               (mha-embed-dim source)
+               (mha-num-heads source)
+               :use-bias (mha-use-bias-p source)
+               :dropout-rate (mha-dropout-rate source)
+               :name (copy-layer-name source)
+               :trainable (layer-trainable-p source))))
+    (when (mha-wq source) (setf (mha-wq copy) (vt-copy (mha-wq source))))
+    (when (mha-wk source) (setf (mha-wk copy) (vt-copy (mha-wk source))))
+    (when (mha-wv source) (setf (mha-wv copy) (vt-copy (mha-wv source))))
+    (when (mha-wo source) (setf (mha-wo copy) (vt-copy (mha-wo source))))
+    (when (mha-bq source) (setf (mha-bq copy) (vt-copy (mha-bq source))))
+    (when (mha-bk source) (setf (mha-bk copy) (vt-copy (mha-bk source))))
+    (when (mha-bv source) (setf (mha-bv copy) (vt-copy (mha-bv source))))
+    (when (mha-bo source) (setf (mha-bo copy) (vt-copy (mha-bo source))))
+    copy))
+
+;;; ---------- 兼容层 ----------
+
+(defmethod copy-network ((source neural-network-compat))
+  (let ((copy (make-instance 'neural-network-compat
+                             :name (copy-layer-name source)
+                             :trainable (layer-trainable-p source)
+                             :lr (nn-compat-lr source)
+                             :grad-clip (nn-compat-grad-clip source))))
+    (dolist (layer (seq-layers source))
+      (seq-add! copy (copy-network layer)))
+    copy))
 
 (defun tensor-top-k (x k &key (axis -1))
   "返回 top-k 值和索引."
@@ -551,29 +726,34 @@
   (zero-grad! model))
 
 (defgeneric clear-forward-cache! (component)
-  (:documentation "清空前向传播产生的中间缓存, 仅保留参数和梯度.")
-  (:method ((c t)) nil)
+  (:documentation "清空前向传播产生的中间缓存。
+只清理 cache-slots 显式列出的 slot，仅保留参数、梯度和反向传播依赖的
+整型/配置状态（batch-size / norm-size / state 等）。
+实现与 zero-grad! 风格一致：
+  - 叶子层通过 cache-slots 返回自己的缓存 slot 名列表；
+  - 容器层（sequential / residual / transformer-block）通过本方法递归子层。
+用户自定义新层只需实现 cache-slots 方法即可被正确清理。")
+  (:method ((component null)) nil)
+  (:method ((component t)) nil)
   (:method ((component layer))
-    (let ((class (class-of component)))
-      (dolist (slot (c2mop:class-slots class))
-        (let ((name (c2mop:slot-definition-name slot)))
-          (when (and (slot-boundp component name)
-                     (let ((sname (symbol-name name)))
-		       ;; 仅仅清理明确带有 cache 字样的 slot
-                       ;; 绝对不能清理 BATCH-SIZE 等反向传播依赖的整型状态！
-                       (search "cache" sname)))
-            (setf (slot-value component name) nil))))))
+    (dolist (slot-name (cache-slots component))
+      (when (slot-boundp component slot-name)
+        (setf (slot-value component slot-name) nil))))
   (:method ((component sequential))
     (dolist (layer (seq-layers component))
       (clear-forward-cache! layer)))
   (:method ((component residual))
-    (clear-forward-cache! (residual-block component)))
+    (when (residual-block component)
+      (clear-forward-cache! (residual-block component))))
   (:method ((component transformer-block))
-    (clear-forward-cache! (tb-mha component))
-    (clear-forward-cache! (tb-ffn1 component))
-    (clear-forward-cache! (tb-ffn2 component))
-    (clear-forward-cache! (tb-ln1 component))
-    (clear-forward-cache! (tb-ln2 component))))
+    (dolist (sub (list (tb-mha component)
+                       (tb-ffn1 component)
+                       (tb-ffn2 component)
+                       (tb-ln1 component)
+                       (tb-ln2 component)
+                       (tb-drop1 component)
+                       (tb-drop2 component)))
+      (when sub (clear-forward-cache! sub)))))
 
 (defun build-model (model &optional dummy-input)
   "强制初始化模型中所有延迟参数.

@@ -432,3 +432,14 @@
       (list (cons "gamma" (bn-dgamma l))
             (cons "beta"  (bn-dbeta  l)))
       '()))
+
+(defmethod cache-slots ((l dropout))
+  '(mask-cache))
+
+(defmethod cache-slots ((l batch-norm))
+  ;; 注意：不含 batch-size / running-mean / running-var
+  '(input-cache xhat-cache std-inv-cache))
+
+(defmethod cache-slots ((l layer-norm))
+  ;; 注意：不含 norm-size
+  '(input-cache xhat-cache std-inv-cache))
