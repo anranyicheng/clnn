@@ -2,10 +2,8 @@
 
 (defclass rnn-cell (layer)
   ((input-size :initarg :input-size
-	       :initarg :input-size
 	       :reader rnn-input-size)
    (hidden-size :initarg :hidden-size
-		:initarg :hidden-size
 		:reader rnn-hidden-size)
    (activation :initarg :activation
 	       :initform :tanh

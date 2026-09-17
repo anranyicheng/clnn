@@ -214,11 +214,14 @@
          (act-kind (dense-activation l))
          (rank (length orig-shape))
          ;; 如果原本是多维输入，把梯度也展平成 2D 去算矩阵乘法
-         (grad-flat (if (<= rank 2)
-                        grad-output
-                        (vt-reshape grad-output
-                                    (list (first (vt-shape a-prev))
-                                          (dense-out-dim l)))))
+	 (grad-flat
+	   (cond
+	     ((= rank 1)
+	      (vt-reshape grad-output (list 1 (dense-out-dim l))))
+	     ((= rank 2) grad-output)
+	     (t (vt-reshape grad-output
+			    (list (first (vt-shape a-prev))
+				  (dense-out-dim l))))))
          ;; 计算激活函数的导数
          (d-activation
            (ecase act-kind

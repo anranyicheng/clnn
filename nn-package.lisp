@@ -38,7 +38,7 @@
    ;; ============= 协议 =============
    :forward :backward :params :grads :update!
    :set-training! :training-p
-
+   :reset-training!   
    ;; ============= 层 =============
    ;; 基类
    :layer :make-layer :layer-name :layer-trainable-p

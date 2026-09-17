@@ -125,23 +125,6 @@
       (ck "BUG-08: Embedding backward 梯度累积 (ratio ≈ 4)"
           (< (abs (- ratio 4.0d0)) 0.1d0)))))
 
-
-;;; ================================================================
-;;; BUG-11: RNN cell 重复 :initarg（代码异味检查）
-;;; ================================================================
-(format t "~%--- BUG-11: RNN cell 重复 initarg ---~%")
-
-(flet ((dup-initarg-p (class-name slot-name)
-         (let* ((class (find-class class-name))
-                (slot (find slot-name (c2mop:class-slots class)
-                            :key #'c2mop:slot-definition-name)))
-           (and slot
-                (> (length (c2mop:slot-definition-initargs slot)) 1)))))
-  (ck "BUG-11: rnn-cell input-size 有重复 initarg"
-      (dup-initarg-p 'rnn-cell 'input-size))
-  (ck "BUG-11: rnn-cell hidden-size 有重复 initarg"
-      (dup-initarg-p 'rnn-cell 'hidden-size)))
-
 ;;; ================================================================
 ;;; BUG-14: RMSprop centered 分母不为 NaN
 ;;; 直接构造一个能让 v - mg^2 落到 0/负 的序列：

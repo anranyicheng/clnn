@@ -773,3 +773,5 @@
   (test-transformer-block-a)
   )
 
+(run-all-tests)
+

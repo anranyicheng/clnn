@@ -23,9 +23,10 @@
 	      :accessor layer-trainable-p
 	      :type boolean
 	      :documentation "是否参与训练")
-   (training :initform *training-mode*
-	     :accessor layer-training
-	     :type boolean :documentation "内部训练状态"))
+   (training :initarg :training
+             :accessor layer-training
+             :type (or null boolean)
+	     :documentation "内部训练状态"))
   (:documentation "所有神经网络层的基类."))
 
 (defun make-layer (&rest args)
@@ -34,7 +35,7 @@
 
 (defmethod set-training! ((l layer) mode)
   "仅设置本层的局部 training 状态, 不污染全局 *training-mode*."
-  (setf (layer-training l) mode))
+  (setf (layer-training l) (and mode t)))
 
 (defun set-global-training! (mode)
   "显式设置全局训练/推理开关 (影响默认 training-p 方法)."
@@ -45,7 +46,24 @@
   `(let ((*training-mode* ,mode))
      ,@body))
 
-(defmethod training-p ((l layer)) (layer-training l))
+(defmethod training-p ((l layer))
+  "查询本层是否处于训练模式。
+   语义：
+     - 若本层从未 set-training! 过（training 槽 unbound），
+       回退到全局 *training-mode*；因此：
+         (with-training nil (training-p some-layer))  => NIL
+     - 若本层已 set-training! 过，返回局部值，
+       不再受 *training-mode* 影响。"
+  (if (slot-boundp l 'training)
+      (layer-training l)
+      *training-mode*))
+
+(defun reset-training! (layer)
+  "清除本层的显式 training 覆盖，使其重新跟随全局 *training-mode*。
+   常用于在 set-model-training! 之后，重新让 with-training 生效。"
+  (when (slot-boundp layer 'training)
+    (slot-makunbound layer 'training))
+  layer)
 
 (defgeneric forward (component input)
   (:documentation "前向传播.")
@@ -145,7 +163,6 @@ GRAD-LIST = ((name . tensor) ...)"))
 (defgeneric optimizer-zero-grad! (opt)
   (:documentation "清空所有梯度缓存.")
   (:method ((o optimizer)) (values)))
-
 
 (defclass initializer ()
   ((name :initarg :name

@@ -120,7 +120,7 @@
 
 (defun make-multi-head-attention
     (embed-dim num-heads
-     &key use-bias dropout-rate
+     &key (use-bias t) dropout-rate
        (name "mha") (trainable t))
   (let ((head-dim (floor embed-dim num-heads)))
     (assert (= (* head-dim num-heads) embed-dim)
@@ -528,9 +528,9 @@
 
 ;; ---- grad-slots ----
 (defmethod grad-slots ((l multi-head-attention))
-  (let ((slots '(dw-q dw-k dw-v dw-o)))
+  (let ((slots (list 'dw-q 'dw-k 'dw-v 'dw-o)))
     (when (mha-use-bias-p l)
-      (setf slots (nconc slots '(db-q db-k db-v db-o))))
+      (setf slots (append slots (list 'db-q 'db-k 'db-v 'db-o))))
     slots))
 
 (defmethod cache-slots ((l multi-head-attention))

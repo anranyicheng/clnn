@@ -146,8 +146,10 @@
                 (setf (bn-std-inv-cache l) std-inv)
                 (let ((m (bn-momentum l))
                       ;; Bessel 校正: 无偏方差 = 有偏方差 * N/(N-1)
-                      (bessel (/ (coerce batch 'double-float)
-                                 (coerce (1- batch) 'double-float))))
+                      (bessel (if (> batch 1)
+				  (/ (coerce batch 'double-float)
+                                     (coerce (1- batch) 'double-float))
+				  1.0d0)))
                   (setf (bn-running-mean l)
 			(vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m))
 			      (vt-scale (vt-reshape mean-r (list nf)) m)))
@@ -183,8 +185,10 @@
                 (setf (bn-std-inv-cache l) std-inv-r)
                 (let ((m (bn-momentum l))
                       ;; Bessel 校正: 无偏方差 = 有偏方差 * N/(N-1)
-                      (bessel (/ (coerce spatial 'double-float)
-                                 (coerce (1- spatial) 'double-float))))
+                      (bessel (if (> spatial 1)
+				  (/ (coerce spatial 'double-float)
+                                     (coerce (1- spatial) 'double-float))
+				  1.0d0)))
                   (setf (bn-running-mean l)
 			(vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m))
 			      (vt-scale mean-v m)))
@@ -276,9 +280,8 @@
               :accessor ln-norm-size :type (or null fixnum)))
   (:documentation "层归一化."))
 
-
 (defun make-layer-norm
-    (normalized-shape &key eps affine
+    (normalized-shape &key eps (affine t)
 			(name "layer-norm") (trainable t))
   (make-instance 'layer-norm
 		 :normalized-shape
@@ -296,44 +299,70 @@
          (norm-rank (length norm-dims))
          (eps (ln-eps l))
          (start-axis (- rank norm-rank))
-         (norm-size (reduce #'* norm-dims)))
-    (setf (ln-norm-size l) norm-size)
-    (setf (ln-input-cache l) input)
-    (unless (ln-gamma l)
-      (setf (ln-gamma l) (vt-ones norm-dims))
-      (setf (ln-beta l) (vt-zeros norm-dims)))
-    (let* ((flat-shape
-             (append (subseq shape 0 start-axis)
-                     (list norm-size)))
-           (input-flat (vt-reshape input flat-shape))
-           (mean-flat
-             (vt-mean input-flat
-                      :axis -1 :keepdims t))
-           (diff-flat (vt-- input-flat mean-flat))
-           (var-flat
-             (vt-mean (vt-square diff-flat)
-                      :axis -1 :keepdims t))
-           ;; 使用提取的公共函数
-           (std-inv-flat
-             (vt-std-inv-from-var var-flat eps))
-           (xhat-flat (vt-* diff-flat std-inv-flat))
-           (xhat (vt-reshape xhat-flat shape))
-           (std-inv
-             (vt-reshape
-              std-inv-flat
-              (append
-               (subseq shape 0 start-axis)
-               (make-list norm-rank
-                          :initial-element 1)))))
-      (setf (ln-xhat-cache l) xhat)
-      (setf (ln-std-inv-cache l) std-inv)
-      (if (ln-affine-p l)
-          (vt-+ (vt-* (ln-gamma l) xhat)
-                (ln-beta l))
-          xhat))))
+         (norm-size (reduce #'* norm-dims))
+         (aligned-shape
+           (append (make-list start-axis :initial-element 1)
+                   norm-dims)))
+    (labels ((align (param)
+               (if (equal (vt-shape param) aligned-shape)
+                   param
+                   (vt-reshape param aligned-shape))))
+      (setf (ln-norm-size l) norm-size)
+      (setf (ln-input-cache l) input)
+      (unless (ln-gamma l)
+        (setf (ln-gamma l) (vt-ones norm-dims))
+        (setf (ln-beta l) (vt-zeros norm-dims)))
+      (let* ((flat-shape
+               (append (subseq shape 0 start-axis)
+                       (list norm-size)))
+             (input-flat
+               (if (equal shape flat-shape)
+                   input
+                   (vt-reshape input flat-shape)))
+             (mean-flat (vt-mean input-flat :axis -1 :keepdims t))
+             (diff-flat (vt-- input-flat mean-flat))
+             (var-flat
+               (vt-mean (vt-square diff-flat) :axis -1 :keepdims t))
+             (std-inv-flat (vt-std-inv-from-var var-flat eps))
+             (xhat-flat (vt-* diff-flat std-inv-flat))
+             (xhat
+               (if (equal (vt-shape xhat-flat) shape)
+                   xhat-flat
+                   (vt-reshape xhat-flat shape)))
+             (std-inv-target
+               (append (subseq shape 0 start-axis)
+                       (make-list norm-rank :initial-element 1)))
+             (std-inv
+               (if (equal (vt-shape std-inv-flat) std-inv-target)
+                   std-inv-flat
+                   (vt-reshape std-inv-flat std-inv-target))))
+        (setf (ln-xhat-cache l) xhat)
+        (setf (ln-std-inv-cache l) std-inv)
+        (if (ln-affine-p l)
+            (vt-+ (vt-* (align (ln-gamma l)) xhat)
+                  (align (ln-beta l)))
+            xhat)))))
+
+(defun %vt-sum-over-axes (tensor axes &key keepdims)
+  "沿多个轴依次求和。
+   AXES 为整数列表（可为空，此时原样返回 TENSOR）。
+   从大到小排序：当 KEEPDIMS=NIL 时，先求和的轴会被削掉，
+   若从小到大求和，低轴索引会漂移，因此必须从高轴开始。
+
+   本函数存在的意义：不能用
+     (apply #'vt-sum tensor :keepdims nil :axis axes)
+   因为 APPLY 会把最后一个列表参数展开成散列实参，
+   变成 (vt-sum tensor :keepdims nil :axis 0 1) 这种
+   『:axis 0 1』关键字不成对的调用，直接抛
+   SB-INT:SIMPLE-PROGRAM-ERROR: odd number of &KEY arguments。"
+  (if (null axes)
+      tensor
+      (let ((result tensor)
+            (sorted (sort (copy-list axes) #'>)))
+        (dolist (ax sorted result)
+          (setf result (vt-sum result :axis ax :keepdims keepdims))))))
 
 (defmethod backward ((l layer-norm) grad-output)
-  "LayerNorm 反向传播."
   (let* ((shape (vt-shape (ln-input-cache l)))
          (rank (length shape))
          (norm-dims (ln-normalized-shape l))
@@ -342,58 +371,35 @@
          (d (ln-norm-size l))
          (xhat (ln-xhat-cache l))
          (std-inv (ln-std-inv-cache l))
-         (dxhat
-           (if (ln-affine-p l)
-               (vt-* grad-output (ln-gamma l))
-               grad-output))
-         (flat-shape
-           (append (subseq shape 0 start-axis)
-                   (list d)))
-         ;; 将 std-inv reshape 为 flat 形状，避免 norm-rank>1 时广播错误
-         (std-inv-flat
-           (vt-reshape std-inv
-                       (append (subseq shape 0 start-axis)
-                               (list 1)))))
-    (when (ln-affine-p l)
-      (let* ((dxhat-flat (vt-reshape dxhat flat-shape))
-             (xhat-flat (vt-reshape xhat flat-shape))
+         (aligned-shape
+           (append (make-list start-axis :initial-element 1)
+                   norm-dims)))
+    (labels ((align (param)
+               (if (equal (vt-shape param) aligned-shape)
+                   param
+                   (vt-reshape param aligned-shape))))
+      (let* ((dxhat (if (ln-affine-p l)
+                        (vt-* grad-output (align (ln-gamma l)))
+                        grad-output))
              (batch-axes (loop for i below start-axis collect i))
-             (dgamma-flat
-               (if batch-axes
-                   (apply #'vt-sum (vt-* dxhat-flat xhat-flat)
-                          :keepdims nil
-			  :axis batch-axes)
-                   (vt-* dxhat-flat xhat-flat)))
-             (dbeta-flat
-               (if batch-axes
-                   (apply #'vt-sum dxhat-flat
-                          :keepdims nil
-			  :axis batch-axes)
-                   dxhat-flat)))
-        (setf (ln-dgamma l) dgamma-flat)
-        (setf (ln-dbeta l) dbeta-flat)))
-
-    (let* ((dxhat-flat (vt-reshape dxhat flat-shape))
-           (xhat-flat (vt-reshape xhat flat-shape))
-           (sum-dxhat
-             (vt-sum dxhat-flat
-                     :axis -1 :keepdims t))
-           (sum-dxhat-xhat
-             (vt-sum (vt-* dxhat-flat xhat-flat)
-                     :axis -1 :keepdims t))
-           ;; 使用 std-inv-flat (batch_dims..., 1) 与 flat 形状广播
-           (dx-flat
-             (vt-*
-              std-inv-flat
-              (vt-scale
-               (vt--
-                (vt-- (vt-scale dxhat-flat d)
-                      sum-dxhat)
-                (vt-* xhat-flat sum-dxhat-xhat))
-               (/ 1.0d0 d))))
-           (dx (vt-reshape dx-flat shape)))
-      dx)))
-
+             (norm-axes  (loop for i from start-axis below rank collect i)))
+        (when (ln-affine-p l)
+          (setf (ln-dgamma l)
+                (%vt-sum-over-axes (vt-* dxhat xhat)
+                                   batch-axes :keepdims nil))
+          (setf (ln-dbeta l)
+                (%vt-sum-over-axes dxhat
+                                   batch-axes :keepdims nil)))
+        (let* ((sum-dxhat
+                 (%vt-sum-over-axes dxhat norm-axes :keepdims t))
+               (sum-dxhat-xhat
+                 (%vt-sum-over-axes (vt-* dxhat xhat) norm-axes :keepdims t))
+               (dx (vt-* std-inv
+                         (vt-scale
+                          (vt-- (vt-- (vt-scale dxhat d) sum-dxhat)
+                                (vt-* xhat sum-dxhat-xhat))
+                          (/ 1.0d0 d)))))
+          dx)))))
 
 (defmethod params ((l layer-norm))
   (if (ln-affine-p l)

@@ -36,13 +36,30 @@
     model))
 
 (defun seq-insert! (model index layer)
-  "在指定位置插入层."
+  "在指定位置插入层，同时同步插入 layer-names。
+   使用 append + subseq 构造新列表（而不是 nconc/nreverse），
+   避免破坏已有 cons 结构导致的顺序错乱（与 seq-add! 保持一致）。
+   防御：若 seq-layer-names 与 seq-layers 长度不一致（历史数据/旧序列化），
+   先将 names 补齐到与 layers 等长（缺失位置用空串），再执行插入，
+   避免 subseq 越界。"
   (let* ((layers (seq-layers model))
+         (names  (seq-layer-names model))
+         ;; 1. 对齐 names 到与 layers 等长
+         (aligned-names
+           (append names
+                   (make-list (max 0 (- (length layers) (length names)))
+                              :initial-element "")))
+         ;; 2. 同步插入 layers 与 names
          (new-layers
            (append (subseq layers 0 index)
                    (list layer)
-                   (subseq layers index))))
-    (setf (seq-layers model) new-layers))
+                   (subseq layers index)))
+         (new-names
+           (append (subseq aligned-names 0 index)
+                   (list (or (layer-name layer) ""))
+                   (subseq aligned-names index))))
+    (setf (seq-layers model) new-layers)
+    (setf (seq-layer-names model) new-names))
   model)
 
 (defmethod forward ((m sequential) input)
@@ -112,11 +129,13 @@
     (t (list component))))
 
 (defun set-model-training! (model mode)
-  "设置整个模型的训练/推理模式."
+   "设置整个模型的训练/推理模式（永久生效）。
+   该函数会对每一层调用 SET-TRAINING!，使它们不再跟随全局 *TRAINING-MODE*。
+   如需临时切换、且之后能被 WITH-TRAINING 覆盖，请改用：
+     (with-training nil (forward model x))"
   (set-training! model mode)
   (dolist (layer (collect-all-layers model))
     (set-training! layer mode)))
-
 
 (defun param-count (model &key trainable-only)
   "统计模型参数量."
@@ -171,19 +190,25 @@
                           (tb-ln1 component)
                           (tb-ln2 component)))
          (when sub (scale-all-grads! sub factor))))
+      (rnn-sequence
+       (when (rnn-seq-cell component)
+         (scale-all-grads! (rnn-seq-cell component) factor)))
       (layer (scale-slots component))
       (t nil))))
 
 (defun clipped-gradient-update! (model optimizer max-norm)
-  "梯度裁剪后更新参数."
+  "梯度裁剪后更新参数。
+   SCALE-ALL-GRADS! 自身已按容器类型（sequential / residual /
+   transformer-block / rnn-sequence）递归到所有子层，因此这里只需
+   对 MODEL 调用一次。绝不能再遍历 COLLECT-ALL-LAYERS 后逐个调用，
+   否则容器子层会被重复缩放。"
   (let* ((grad-norm (compute-grad-norm model))
          (clip-coeff
            (if (> grad-norm max-norm)
                (/ max-norm grad-norm)
                1.0d0)))
     (unless (= clip-coeff 1.0d0)
-      (dolist (layer (collect-all-layers model))
-        (scale-all-grads! layer clip-coeff)))
+      (scale-all-grads! model clip-coeff))
     (model-update! model optimizer)))
 
 (defun tensor-ensure-2d (x)
@@ -1172,7 +1197,7 @@
       (embedding
        (unless (emb-weight l)
          ;; 传入一个假的索引 0 触发初始化
-         (forward l (vt-zeros (list 1)))))
+	 (forward l (vt-from-sequence '(0) :dtype :int64))))
       (t nil)))
 
   ;; 2. 如果提供了 dummy-input，跑一次前向传播打通剩余层
