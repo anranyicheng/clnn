@@ -8,7 +8,13 @@
    (layer-names :initform '()
 		:initarg :layer-names
 		:accessor seq-layer-names))
-  (:documentation "顺序模型."))
+  (:documentation "顺序模型。
+注意: 本容器假设每个子层满足『单输入单输出、单梯度进单梯度出』的契约。
+以下层不满足该契约, 不能直接放入 sequential:
+  - rnn-cell : backward 返回多值 (dx, dh-prev); 请用 rnn-sequence 或手动展开
+  - multi-head-attention : forward 接受 (q,k,v) 三元组
+  - lstm/gru : 返回 (output, h, c) 多值, 且期望 (B,T,D) 输入
+如需组合这些层, 请使用对应的包装层 (rnn-sequence 等) 或自定义容器。"))
 
 (defun make-sequential (&key (name "sequential"))
   (make-instance 'sequential
@@ -226,84 +232,17 @@
      (if (> c 0.0d0) xi yi))
    condition x y))
 
-
-(defun %serialize-vt (tensor)
-  "将张量序列化为 plist（含 shape/dtype/values），可无损还原。"
-  (when tensor
-    (list :shape (vt-shape tensor)
-          :dtype (vt-dtype tensor)
-          :values (vt-to-list tensor))))
-
-(defun %restore-vt (spec)
-  "从 %serialize-vt 产生的 plist 还原张量。"
-  (destructuring-bind (&key shape dtype values) spec
-    (vt-reshape (vt-from-sequence values :dtype dtype) shape)))
-
-(defun layer->plist (l)
-  "将单个层序列化为 plist（目前支持 dense / activation-layer）。"
-  (let ((cls (class-name (class-of l))))
-    (ecase cls
-      (dense
-       (list :type 'dense
-             :name (layer-name l)
-             :in-dim (dense-in-dim l)
-             :out-dim (dense-out-dim l)
-             :activation (dense-activation l)
-             :use-bias (dense-use-bias-p l)
-             :weights (%serialize-vt (dense-weights l))
-             :bias (%serialize-vt (dense-bias l))))
-      (activation-layer
-       (list :type 'activation-layer
-             :name (layer-name l)
-             :kind (activation-kind l)
-             :leaky-alpha (act-leaky-alpha l)))
-      (otherwise (error "model->plist: 不支持的层类型 ~a" cls)))))
-
-(defun model->plist (model)
-  "将模型序列化为 plist（用于保存）。目前支持 sequential 容器与 dense/activation-layer 层。"
-  `(:type ,(class-name (class-of model))
-    :name ,(layer-name model)
-    :layers ,(mapcar #'layer->plist (collect-all-layers model))))
-
-(defun plist->model (plist)
-  "从 plist 反序列化模型（目前支持 sequential 容器与 dense/activation-layer 层）。"
-  (let ((model (make-sequential :name (getf plist :name))))
-    (dolist (l-plist (getf plist :layers))
-      (seq-add! model
-                (let ((lt (getf l-plist :type)))
-                  (ecase lt
-                    (dense
-                     (let ((d (make-dense (getf l-plist :out-dim)
-                                          :in-dim (getf l-plist :in-dim)
-                                          :activation (getf l-plist :activation)
-                                          :use-bias (getf l-plist :use-bias)
-                                          :name (getf l-plist :name))))
-                       (when (getf l-plist :weights)
-                         (setf (dense-weights d)
-                               (%restore-vt (getf l-plist :weights))))
-                       (when (getf l-plist :bias)
-                         (setf (dense-bias d)
-                               (%restore-vt (getf l-plist :bias))))
-                       d))
-                    (activation-layer
-                     (make-activation-layer (getf l-plist :kind)
-                                            :leaky-alpha (getf l-plist :leaky-alpha)
-                                            :name (getf l-plist :name)))
-                    (otherwise (error "plist->model: 不支持的层类型 ~a" lt))))))
-    model))
-
-(defun save-model (model filepath)
-  "保存模型到文件."
-  (with-open-file
-      (out filepath :direction :output
-                    :if-exists :supersede)
-    (print (model->plist model) out)))
-
-(defun load-model (filepath)
-  "从文件加载模型."
-  (with-open-file (in filepath)
-    (plist->model (read in))))
-
+;;; ============================================================
+;;; 模型序列化：layer <-> plist (基于 CLOS 泛型分发)
+;;; ============================================================
+;;;
+;;; 设计原则：
+;;;   - layer->plist  按对象类分派；plist->layer 按 :type 字段分派；
+;;;   - 序列化可学习参数 + 运行统计量 (BN running mean/var)；
+;;;   - 不序列化梯度 / 前向缓存 / 训练状态 (可重建/重设)；
+;;;   - 容器层递归其子层；叶子层各自实现自己的方法；
+;;;   - 新增层只需实现 layer->plist 方法 + 在 plist->layer 的 ecase
+;;;     里加一个分支，不需要修改其它代码。
 
 (defclass neural-network-compat (sequential)
   ((lr :initarg :lr
@@ -313,6 +252,461 @@
 	      :initform 1.0d0
 	      :accessor nn-compat-grad-clip))
   (:documentation "兼容层."))
+
+(defun %serialize-vt (tensor)
+  "将张量序列化为 plist (含 shape/dtype/values)；nil 返回 nil。"
+  (when tensor
+    (list :shape (vt-shape tensor)
+          :dtype (vt-dtype tensor)
+          :values (vt-to-list tensor))))
+
+(defun %restore-vt (spec)
+  "从 %serialize-vt 产生的 plist 还原张量；nil 输入返回 nil。"
+  (when spec
+    (destructuring-bind (&key shape dtype values) spec
+      (vt-reshape (vt-from-sequence values :dtype dtype) shape))))
+
+(defgeneric layer->plist (layer)
+  (:documentation "将单个层序列化为 plist。每种层类型实现自己的方法。")
+  (:method ((l layer))
+    (error "layer->plist: 不支持的层类型 ~a" (class-name (class-of l)))))
+
+;;; ---------- 容器层 ----------
+
+(defmethod layer->plist ((l sequential))
+  (list :type 'sequential
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :layers (mapcar #'layer->plist (seq-layers l))))
+
+(defmethod layer->plist ((l residual))
+  (list :type 'residual
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :block (layer->plist (residual-block l))))
+
+(defmethod layer->plist ((l transformer-block))
+  (list :type 'transformer-block
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :embed-dim (tb-embed-dim l)
+        :num-heads (tb-num-heads l)
+        :ffn-dim   (tb-ffn-dim l)
+        :dropout-rate (tb-dropout-rate l)
+        :eps (tb-eps l)
+        ;; 子层（含全部参数）
+        :mha  (layer->plist (tb-mha  l))
+        :ffn1 (layer->plist (tb-ffn1 l))
+        :ffn2 (layer->plist (tb-ffn2 l))
+        :ln1  (layer->plist (tb-ln1  l))
+        :ln2  (layer->plist (tb-ln2  l))))
+
+;;; ---------- Dense / Activation / Flatten ----------
+
+(defmethod layer->plist ((l dense))
+  (list :type 'dense
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :in-dim  (dense-in-dim l)
+        :out-dim (dense-out-dim l)
+        :activation (dense-activation l)
+        :use-bias (dense-use-bias-p l)
+        :leaky-alpha (dense-leaky-alpha l)
+        :weights (%serialize-vt (dense-weights l))
+        :bias    (%serialize-vt (dense-bias    l))))
+
+(defmethod layer->plist ((l activation-layer))
+  (list :type 'activation-layer
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :kind (activation-kind l)
+        :leaky-alpha (act-leaky-alpha l)))
+
+(defmethod layer->plist ((l flatten))
+  (list :type 'flatten
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :start-dim (flatten-start-dim l)))
+
+;;; ---------- Conv / Pool ----------
+
+(defmethod layer->plist ((l conv2d))
+  (list :type 'conv2d
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :in-channels  (conv-in-channels l)
+        :out-channels (conv-out-channels l)
+        :kernel-size (conv-kernel-size l)
+        :stride (conv-stride l)
+        :padding (conv-padding l)
+        :use-bias (conv-use-bias-p l)
+        :weights (%serialize-vt (conv-weights l))
+        :bias    (%serialize-vt (conv-bias    l))))
+
+(defmethod layer->plist ((l max-pool2d))
+  (list :type 'max-pool2d
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :kernel-size (pool-kernel-size l)
+        :stride (pool-stride l)
+        :padding (pool-padding l)))
+
+(defmethod layer->plist ((l avg-pool2d))
+  (list :type 'avg-pool2d
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :kernel-size (apool-kernel-size l)
+        :stride (apool-stride l)
+        :padding (apool-padding l)))
+
+(defmethod layer->plist ((l global-avg-pool2d))
+  (list :type 'global-avg-pool2d
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)))
+
+;;; ---------- Normalization / Dropout ----------
+
+(defmethod layer->plist ((l dropout))
+  (list :type 'dropout
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :p (dropout-p l)
+        :inverted (dropout-inverted-p l)))
+
+(defmethod layer->plist ((l batch-norm))
+  (list :type 'batch-norm
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :num-features (bn-num-features l)
+        :eps (bn-eps l)
+        :momentum (bn-momentum l)
+        :affine (bn-affine-p l)
+        :gamma (%serialize-vt (bn-gamma l))
+        :beta  (%serialize-vt (bn-beta  l))
+        :running-mean (%serialize-vt (bn-running-mean l))
+        :running-var  (%serialize-vt (bn-running-var  l))))
+
+(defmethod layer->plist ((l layer-norm))
+  (list :type 'layer-norm
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :normalized-shape (ln-normalized-shape l)
+        :eps (ln-eps l)
+        :affine (ln-affine-p l)
+        :gamma (%serialize-vt (ln-gamma l))
+        :beta  (%serialize-vt (ln-beta  l))))
+
+;;; ---------- Embedding ----------
+
+(defmethod layer->plist ((l embedding))
+  (list :type 'embedding
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :num-embeddings (emb-num-embeddings l)
+        :embedding-dim  (emb-embedding-dim l)
+        :max-norm (emb-max-norm l)
+        :scale-grad-by-freq (emb-scale-grad-by-freq l)
+        :weight (%serialize-vt (emb-weight l))))
+
+;;; ---------- RNN / LSTM / GRU ----------
+
+(defmethod layer->plist ((l rnn-cell))
+  (list :type 'rnn-cell
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :input-size  (rnn-input-size l)
+        :hidden-size (rnn-hidden-size l)
+        :activation  (rnn-activation l)
+        :wih (%serialize-vt (rnn-wih l))
+        :whh (%serialize-vt (rnn-whh l))
+        :bih (%serialize-vt (rnn-bih l))))
+
+(defmethod layer->plist ((l lstm))
+  (list :type 'lstm
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :input-size  (lstm-input-size l)
+        :hidden-size (lstm-hidden-size l)
+        :weight-ih (%serialize-vt (lstm-weight-ih l))
+        :weight-hh (%serialize-vt (lstm-weight-hh l))
+        :bias-ih   (%serialize-vt (lstm-bias-ih   l))
+        :bias-hh   (%serialize-vt (lstm-bias-hh   l))
+        :h-0 (%serialize-vt (lstm-h-0 l))
+        :c-0 (%serialize-vt (lstm-c-0 l))))
+
+(defmethod layer->plist ((l gru))
+  (list :type 'gru
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :input-size  (gru-input-size l)
+        :hidden-size (gru-hidden-size l)
+        :weight-ih (%serialize-vt (gru-weight-ih l))
+        :weight-hh (%serialize-vt (gru-weight-hh l))
+        :bias-ih   (%serialize-vt (gru-bias-ih   l))
+        :bias-hh   (%serialize-vt (gru-bias-hh   l))))
+
+;;; ---------- Attention ----------
+
+(defmethod layer->plist ((l multi-head-attention))
+  (list :type 'multi-head-attention
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :embed-dim (mha-embed-dim l)
+        :num-heads (mha-num-heads l)
+        :use-bias  (mha-use-bias-p l)
+        :dropout-rate (mha-dropout-rate l)
+        :w-q (%serialize-vt (mha-wq l))
+        :w-k (%serialize-vt (mha-wk l))
+        :w-v (%serialize-vt (mha-wv l))
+        :w-o (%serialize-vt (mha-wo l))
+        :b-q (%serialize-vt (mha-bq l))
+        :b-k (%serialize-vt (mha-bk l))
+        :b-v (%serialize-vt (mha-bv l))
+        :b-o (%serialize-vt (mha-bo l))))
+
+;;; ---------- 兼容层 ----------
+
+(defmethod layer->plist ((l neural-network-compat))
+  (list :type 'neural-network-compat
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :lr (nn-compat-lr l)
+        :grad-clip (nn-compat-grad-clip l)
+        :layers (mapcar #'layer->plist (seq-layers l))))
+
+
+;;; ============================================================
+;;; plist -> layer  (按 :type 字段分派)
+;;; ============================================================
+
+(defun plist->layer (p)
+  "从 layer->plist 产生的 plist 还原层。"
+  (let ((type (getf p :type))
+        (name (getf p :name ""))
+        (trainable (getf p :trainable t)))
+    (ecase type
+      ;; ---------- 容器 ----------
+      (sequential
+       (let ((m (make-sequential :name name)))
+         (setf (layer-trainable-p m) trainable)
+         (dolist (sub (getf p :layers))
+           (seq-add! m (plist->layer sub)))
+         m))
+
+      (residual
+       (let ((r (make-residual (plist->layer (getf p :block))
+                               :name name)))
+         (setf (layer-trainable-p r) trainable)
+         r))
+
+      (transformer-block
+       (let ((tb (make-transformer-block
+                  (getf p :embed-dim)
+                  (getf p :num-heads)
+                  :ffn-dim (getf p :ffn-dim)
+                  :dropout-rate (getf p :dropout-rate)
+                  :eps (getf p :eps)
+                  :name name
+                  :trainable trainable)))
+         ;; 覆盖构造时创建的默认子层
+         (setf (tb-mha  tb) (plist->layer (getf p :mha)))
+         (setf (tb-ffn1 tb) (plist->layer (getf p :ffn1)))
+         (setf (tb-ffn2 tb) (plist->layer (getf p :ffn2)))
+         (setf (tb-ln1  tb) (plist->layer (getf p :ln1)))
+         (setf (tb-ln2  tb) (plist->layer (getf p :ln2)))
+         tb))
+
+      ;; ---------- Dense / Activation / Flatten ----------
+      (dense
+       (let ((d (make-dense (getf p :out-dim)
+                            :in-dim (getf p :in-dim)
+                            :activation (getf p :activation)
+                            :use-bias (getf p :use-bias)
+                            :leaky-alpha (getf p :leaky-alpha)
+                            :name name
+                            :trainable trainable)))
+         (setf (dense-weights d) (%restore-vt (getf p :weights)))
+         (setf (dense-bias    d) (%restore-vt (getf p :bias)))
+         d))
+
+      (activation-layer
+       (make-activation-layer (getf p :kind)
+                              :leaky-alpha (getf p :leaky-alpha)
+                              :name name
+                              :trainable trainable))
+
+      (flatten
+       (let ((f (make-flatten :start-dim (getf p :start-dim)
+                              :name name)))
+         (setf (layer-trainable-p f) trainable)
+         f))
+
+      ;; ---------- Conv / Pool ----------
+      (conv2d
+       (let ((c (make-conv2d (getf p :out-channels)
+                             (getf p :kernel-size)
+                             :in-channels (getf p :in-channels)
+                             :stride (getf p :stride)
+                             :padding (getf p :padding)
+                             :use-bias (getf p :use-bias)
+                             :name name
+                             :trainable trainable)))
+         (setf (conv-weights c) (%restore-vt (getf p :weights)))
+         (setf (conv-bias    c) (%restore-vt (getf p :bias)))
+         c))
+
+      (max-pool2d
+       (make-max-pool2d (getf p :kernel-size)
+                        :stride (getf p :stride)
+                        :padding (getf p :padding)
+                        :name name
+                        :trainable trainable))
+
+      (avg-pool2d
+       (make-avg-pool2d (getf p :kernel-size)
+                        :stride (getf p :stride)
+                        :padding (getf p :padding)
+                        :name name
+                        :trainable trainable))
+
+      (global-avg-pool2d
+       (make-global-avg-pool2d :name name
+                               :trainable trainable))
+
+      ;; ---------- Normalization / Dropout ----------
+      (dropout
+       (let ((d (make-dropout (getf p :p)
+                              :name name
+                              :inverted (getf p :inverted))))
+         (setf (layer-trainable-p d) trainable)
+         d))
+
+      (batch-norm
+       (let ((bn (make-batch-norm (getf p :num-features)
+                                  :eps (getf p :eps)
+                                  :momentum (getf p :momentum)
+                                  :affine (getf p :affine)
+                                  :name name
+                                  :trainable trainable)))
+         (setf (bn-gamma        bn) (%restore-vt (getf p :gamma)))
+         (setf (bn-beta         bn) (%restore-vt (getf p :beta)))
+         (setf (bn-running-mean bn) (%restore-vt (getf p :running-mean)))
+         (setf (bn-running-var  bn) (%restore-vt (getf p :running-var)))
+         bn))
+
+      (layer-norm
+       (let ((ln (make-layer-norm (getf p :normalized-shape)
+                                  :eps (getf p :eps)
+                                  :affine (getf p :affine)
+                                  :name name
+                                  :trainable trainable)))
+         (setf (ln-gamma ln) (%restore-vt (getf p :gamma)))
+         (setf (ln-beta  ln) (%restore-vt (getf p :beta)))
+         ln))
+
+      ;; ---------- Embedding ----------
+      (embedding
+       (let ((e (make-embedding (getf p :num-embeddings)
+                                (getf p :embedding-dim)
+                                :max-norm (getf p :max-norm)
+                                :scale-grad-by-freq (getf p :scale-grad-by-freq)
+                                :name name
+                                :trainable trainable)))
+         (setf (emb-weight e) (%restore-vt (getf p :weight)))
+         e))
+
+      ;; ---------- RNN / LSTM / GRU ----------
+      (rnn-cell
+       (let ((r (make-rnn-cell (getf p :input-size)
+                               (getf p :hidden-size)
+                               :activation (getf p :activation)
+                               :name name
+                               :trainable trainable)))
+         (setf (rnn-wih r) (%restore-vt (getf p :wih)))
+         (setf (rnn-whh r) (%restore-vt (getf p :whh)))
+         (setf (rnn-bih r) (%restore-vt (getf p :bih)))
+         r))
+
+      (lstm
+       (let ((l (make-lstm (getf p :input-size)
+                           (getf p :hidden-size)
+                           :name name
+                           :trainable trainable
+                           :h-0 (%restore-vt (getf p :h-0))
+                           :c-0 (%restore-vt (getf p :c-0)))))
+         (setf (lstm-weight-ih l) (%restore-vt (getf p :weight-ih)))
+         (setf (lstm-weight-hh l) (%restore-vt (getf p :weight-hh)))
+         (setf (lstm-bias-ih   l) (%restore-vt (getf p :bias-ih)))
+         (setf (lstm-bias-hh   l) (%restore-vt (getf p :bias-hh)))
+         l))
+
+      (gru
+       (let ((g (make-gru (getf p :input-size)
+                          (getf p :hidden-size)
+                          :name name
+                          :trainable trainable)))
+         (setf (gru-weight-ih g) (%restore-vt (getf p :weight-ih)))
+         (setf (gru-weight-hh g) (%restore-vt (getf p :weight-hh)))
+         (setf (gru-bias-ih   g) (%restore-vt (getf p :bias-ih)))
+         (setf (gru-bias-hh   g) (%restore-vt (getf p :bias-hh)))
+         g))
+
+      ;; ---------- Attention ----------
+      (multi-head-attention
+       (let ((m (make-multi-head-attention
+                 (getf p :embed-dim)
+                 (getf p :num-heads)
+                 :use-bias (getf p :use-bias)
+                 :dropout-rate (getf p :dropout-rate)
+                 :name name
+                 :trainable trainable)))
+         (setf (mha-wq m) (%restore-vt (getf p :w-q)))
+         (setf (mha-wk m) (%restore-vt (getf p :w-k)))
+         (setf (mha-wv m) (%restore-vt (getf p :w-v)))
+         (setf (mha-wo m) (%restore-vt (getf p :w-o)))
+         (setf (mha-bq m) (%restore-vt (getf p :b-q)))
+         (setf (mha-bk m) (%restore-vt (getf p :b-k)))
+         (setf (mha-bv m) (%restore-vt (getf p :b-v)))
+         (setf (mha-bo m) (%restore-vt (getf p :b-o)))
+         m))
+
+      ;; ---------- 兼容层 ----------
+      (neural-network-compat
+       (let ((m (make-instance 'neural-network-compat
+                               :name name
+                               :trainable trainable
+                               :lr (getf p :lr)
+                               :grad-clip (getf p :grad-clip))))
+         (dolist (sub (getf p :layers))
+           (seq-add! m (plist->layer sub)))
+         m)))))
+
+;;; ---------- 顶层 API ----------
+
+(defun model->plist (model)
+  "将模型序列化为 plist。"
+  (layer->plist model))
+
+(defun plist->model (plist)
+  "从 plist 反序列化模型。"
+  (plist->layer plist))
+
+(defun save-model (model filepath)
+  "保存模型到文件。*print-readably* 保证结构可无损读回。"
+  (with-open-file (out filepath :direction :output
+                                :if-exists :supersede)
+    (let ((*print-readably* t)
+          (*print-pretty* nil)
+          (*package* (find-package :nn)))
+      (write (model->plist model) :stream out))))
+
+(defun load-model (filepath)
+  "从文件加载模型。"
+  (with-open-file (in filepath :direction :input)
+    (let ((*package* (find-package :nn)))
+      (plist->model (read in)))))
+
+
 
 (defun find-slot-value (obj name)
   "在对象中查找名为 NAME 的权重 slot."
@@ -789,3 +1183,26 @@
   (clear-forward-cache! model)
 
   model)
+
+;;; ---- rnn-sequence 的容器式方法 (追加到 nn-model.lisp 末尾) ----
+
+(defmethod zero-grad-children ((l rnn-sequence))
+  (list (rnn-seq-cell l)))
+
+(defmethod clear-forward-cache! ((l rnn-sequence))
+  ;; 先清自身缓存, 再递归清 cell 的缓存
+  (call-next-method)
+  (when (rnn-seq-cell l)
+    (clear-forward-cache! (rnn-seq-cell l))))
+
+(defmethod copy-network ((source rnn-sequence))
+  (let ((copy (make-rnn-sequence
+               (rnn-input-size  (rnn-seq-cell source))
+               (rnn-hidden-size (rnn-seq-cell source))
+               :activation (rnn-activation (rnn-seq-cell source))
+               :name (copy-layer-name source)
+               :trainable (layer-trainable-p source))))
+    ;; 用深拷贝覆盖默认创建的 cell
+    (setf (slot-value copy 'cell)
+          (copy-network (rnn-seq-cell source)))
+    copy))

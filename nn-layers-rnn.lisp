@@ -630,3 +630,96 @@
 
 (defmethod cache-slots ((l gru))
   '(cache))
+
+
+;;; ============================================================
+;;; rnn-sequence: 在时间维度自动展开 rnn-cell 的包装层
+;;; ============================================================
+;;;
+;;; 单步的 rnn-cell 通过 (values dx dh-prev) 支持手动时间展开，
+;;; 但 sequential 的 backward 只取第一个返回值, 无法直接使用。
+;;; 本层把整个序列的展开逻辑内聚到自身:
+;;;   forward:  (B, T, D)  ->  (B, T, H)
+;;;   backward: (B, T, H)  ->  (B, T, D)
+;;; 内部按时间步倒序调用 cell 的 backward, 并把 dh_prev 传给上一步,
+;;; 所有时间步的权重梯度自然累积到共享的 cell 上。
+
+(defclass rnn-sequence (layer)
+  ((cell :initarg :cell :reader rnn-seq-cell)
+   ;; 本层自己缓存每步的中间量 (cell 自身只存最后一次 forward)
+   (x-cache      :initform nil :accessor rnn-seq-x-cache)
+   (h-prev-cache :initform nil :accessor rnn-seq-h-prev-cache)
+   (h-cache      :initform nil :accessor rnn-seq-h-cache))
+  (:documentation "在时间维度展开 rnn-cell 的包装层。输入 (B,T,D), 输出 (B,T,H)。"))
+
+(defun make-rnn-sequence (input-size hidden-size
+                          &key activation
+                            (name "rnn-sequence")
+                            (trainable t))
+  (make-instance 'rnn-sequence
+                 :cell (make-rnn-cell input-size hidden-size
+                                      :activation (or activation :tanh))
+                 :name name :trainable trainable))
+
+(defmethod forward ((l rnn-sequence) input)
+  (let* ((shape (vt-shape input))
+         (batch (first shape))
+         (seq-len (second shape))
+         (cell (rnn-seq-cell l))
+         (hs (rnn-hidden-size cell))
+         (output (vt-zeros (list batch seq-len hs))))
+    (ensure-rnn-cell-params cell)
+    (let ((h-prev (vt-zeros (list batch hs)))
+          (xs '()) (h-preves '()) (hs-list '()))
+      (dotimes (i seq-len)                                     
+        (let* ((x-t (vt-slice input  (list :all) (list i) (list :all)))
+               (h-t (rnn-cell-step cell x-t h-prev)))
+          (setf (vt-slice output (list :all) (list i) (list :all)) h-t)
+          (push x-t    xs)
+          (push h-prev h-preves)
+          (push h-t    hs-list)
+          (setf h-prev h-t)))
+      (setf (rnn-seq-x-cache l)      (nreverse xs))
+      (setf (rnn-seq-h-prev-cache l) (nreverse h-preves))
+      (setf (rnn-seq-h-cache l)      (nreverse hs-list))
+      output)))
+
+(defmethod backward ((l rnn-sequence) grad-output)
+  (let* ((cell (rnn-seq-cell l))
+         (xs       (rnn-seq-x-cache l))
+         (h-preves (rnn-seq-h-prev-cache l))
+         (hs-list  (rnn-seq-h-cache l))
+         (seq-len (length xs))
+         (batch (first (vt-shape (first xs))))
+         (D (rnn-input-size cell))
+         (H (rnn-hidden-size cell))
+         (grad-input (vt-zeros (list batch seq-len D)))
+         (dh-next (vt-zeros (list batch H))))
+    (dotimes (i seq-len)
+      (let* ((idx  (- seq-len i 1))
+             (x-t  (nth idx xs))
+             (h-pv (nth idx h-preves))
+             (h-t  (nth idx hs-list))
+             (g-t  (vt-slice grad-output (list :all) (list idx) (list :all)))) ; idx
+        (setf (rnn-input-cache  cell) x-t)
+        (setf (rnn-h-prev-cache cell) h-pv)
+        (setf (rnn-h-cache      cell) h-t)
+        (let ((g-combined (vt-+ g-t dh-next)))
+          (multiple-value-bind (dx dh-prev)
+              (backward cell g-combined)
+            (setf (vt-slice grad-input (list :all) (list idx) (list :all)) dx) ; idx
+            (setf dh-next dh-prev)))))
+    grad-input))
+
+
+(defmethod params ((l rnn-sequence)) (params (rnn-seq-cell l)))
+(defmethod grads  ((l rnn-sequence)) (grads  (rnn-seq-cell l)))
+
+(defmethod grad-slots  ((l rnn-sequence)) '())
+(defmethod cache-slots ((l rnn-sequence))
+  '(x-cache h-prev-cache h-cache))
+
+(defmethod set-training! ((l rnn-sequence) mode)
+  (call-next-method)
+  (when (rnn-seq-cell l)
+    (set-training! (rnn-seq-cell l) mode)))

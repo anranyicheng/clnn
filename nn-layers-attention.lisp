@@ -16,31 +16,55 @@
     (vt-transpose vt perm)))
 
 (defun sdpa-forward (q k v &optional mask dropout-rate is-training)
-  "SDPA 前向 (维度无关版本): d_k = 最后一维(head_dim)."
+  "SDPA 前向 (维度无关版本): d_k = 最后一维(head_dim).
+   返回值: (values output attn attn-dropped dropout-mask)
+     OUTPUT         - 注意力输出 = attn-dropped @ v
+     ATTN           - softmax 输出 a (未经过 dropout)
+     ATTN-DROPPED   - dropout 后 a' (未启用 dropout 时等于 ATTN)
+     DROPOUT-MASK   - dropout 的保留掩码 (0 或 1/(1-p)); 未启用时为 NIL"
   (let* ((d-k (car (last (vt-shape q))))
          (scale (/ 1.0d0 (sqrt (coerce d-k 'double-float))))
-         ;; 使用防御性转置
          (scores (vt-scale (vt-matmul q (transpose-last-two k)) scale))
          (masked-scores (if mask (funcall mask scores) scores))
          (attn (vt-softmax masked-scores))
-         (attn-dropped
-	   (if (and is-training (> (or dropout-rate 0.0d0) 0.0d0))
-                 (vt-map (lambda (x)
-			   (if (< (random 1.0d0) dropout-rate)
-			       0.0d0
-			       (/ x (- 1.0d0 dropout-rate))))
-			 attn)
-               attn))
+         (dropout-p (and is-training
+                         (> (or dropout-rate 0.0d0) 0.0d0)))
+         (dropout-mask
+           (when dropout-p
+             (let ((keep-scale (/ 1.0d0 (- 1.0d0 dropout-rate))))
+               (vt-map (lambda (x)
+                         (declare (ignore x))
+                         (if (< (random 1.0d0) dropout-rate)
+                             0.0d0
+                             keep-scale))
+                       attn))))
+         (attn-dropped (if dropout-mask
+                           (vt-* attn dropout-mask)
+                           attn))
          (output (vt-matmul attn-dropped v)))
-    (values output attn-dropped)))
+    (values output attn attn-dropped dropout-mask)))
 
-(defun sdpa-backward (d-output q k v attn)
-  "SDPA 反向 (维度无关版本): d_k = 最后一维(head_dim)."
+(defun sdpa-backward (d-output q k v attn attn-dropped dropout-mask)
+  "SDPA 反向 (维度无关版本): d_k = 最后一维(head_dim).
+   ATTN          - softmax 输出 a (未 dropout 前的概率分布, 必须满足 Σa=1)
+   ATTN-DROPPED  - dropout 后的权重 a' (无 dropout 时等于 attn)
+   DROPOUT-MASK  - dropout 保留掩码 (未启用时为 NIL)
+   反向流程:
+     1. dv             = a'ᵀ @ d_output
+     2. dL/da'         = d_output @ vᵀ
+     3. dL/da          = dL/da' * mask        (通过 dropout)
+     4. dL/dscores     = a ⊙ (dL/da - Σ(dL/da ⊙ a))   (softmax 反向, 用原始 a)"
   (let* ((d-k (car (last (vt-shape q))))
          (scale (/ 1.0d0 (sqrt (coerce d-k 'double-float))))
-         ;; 使用防御性转置
-         (dv (vt-matmul (transpose-last-two attn) d-output))
-         (d-attn (vt-matmul d-output (transpose-last-two v)))
+         ;; 步骤 1: dv 使用 a'
+         (dv (vt-matmul (transpose-last-two attn-dropped) d-output))
+         ;; 步骤 2: 关于 a' 的梯度
+         (d-attn-dropped (vt-matmul d-output (transpose-last-two v)))
+         ;; 步骤 3: 通过 dropout 反向 (逐元素乘 mask)
+         (d-attn (if dropout-mask
+                     (vt-* d-attn-dropped dropout-mask)
+                     d-attn-dropped))
+         ;; 步骤 4: softmax 反向, 必须使用原始 a
          (sum-daat (vt-sum (vt-* d-attn attn) :axis -1 :keepdims t))
          (d-scores (vt-* attn (vt-- d-attn sum-daat)))
          (d-scores-scaled (vt-scale d-scores scale))
@@ -179,8 +203,7 @@
            (v-2d (vt-reshape
                   (vt-contiguous v-t)
                   (list (* batch nh) seq-v hd))))
-      (multiple-value-bind
-            (attn-out attn-w)
+      (multiple-value-bind (attn-out attn-raw attn-dropped attn-mask)
           (sdpa-forward q-2d k-2d v-2d nil
                         (mha-dropout-rate l)
                         (training-p l))
@@ -202,15 +225,23 @@
                      (vt-matmul attn-merged
                                 (vt-transpose
                                  (mha-wo l))))))
-          (setf (mha-cache l)
-                (list :query query :key key
-                      :value value
-                      :q-2d q-2d :k-2d k-2d
-                      :v-2d v-2d :attn-w attn-w
-                      :attn-merged attn-merged
-                      :batch batch :seq-q seq-q
-                      :seq-k seq-k :nh nh
-                      :hd hd :ed ed))
+	  (setf (mha-cache l)
+		(list :query query
+		      :key key
+		      :value value
+		      :q-2d q-2d
+		      :k-2d k-2d
+		      :v-2d v-2d
+		      :attn-raw     attn-raw       ; softmax 输出 (新)
+		      :attn-w       attn-dropped   ; 兼容原字段名, 语义为 a'
+		      :attn-mask    attn-mask      ; dropout mask (新)
+		      :attn-merged attn-merged
+		      :batch batch
+		      :seq-q seq-q
+		      :seq-k seq-k
+		      :nh nh
+		      :hd hd
+		      :ed ed))
           output)))))
 
 (defmethod backward ((l multi-head-attention) grad-output)
@@ -221,7 +252,9 @@
          (q-2d (getf cache :q-2d))
          (k-2d (getf cache :k-2d))
          (v-2d (getf cache :v-2d))
-         (attn-w (getf cache :attn-w))
+	 (attn-raw  (getf cache :attn-raw))
+	 (attn-w    (getf cache :attn-w))
+	 (attn-mask (getf cache :attn-mask))
          (attn-merged (getf cache :attn-merged))
          (batch (getf cache :batch))
          (seq-q (getf cache :seq-q))
@@ -266,8 +299,8 @@
             (list (* batch nh) seq-q hd))))
     (multiple-value-bind
           (dq-2d dk-2d dv-2d)
-        (sdpa-backward d-attn-out
-                       q-2d k-2d v-2d attn-w)
+	(sdpa-backward d-attn-out q-2d k-2d v-2d
+                       attn-raw attn-w attn-mask)
       (flet ((merge-heads (d-2d seq-len)
                (let* ((d-4d (vt-reshape
                              d-2d

@@ -154,14 +154,19 @@ GRAD-LIST = ((name . tensor) ...)"))
 	 :type string))
   (:documentation "参数初始化器基类."))
 
-(defgeneric init-weight (init shape &key fan-in fan-out)
-  (:documentation "根据 shape 初始化权重张量."))
+(defgeneric init-weight (init shape &key fan-in fan-out layout)
+  (:documentation "根据 shape 初始化权重张量。
+   FAN-IN / FAN-OUT 显式提供时优先使用 (跳过自动推断)。
+   LAYOUT 仅在 shape 为 2D 时生效, 指定维度的语义:
+     :in-out (默认) -> shape = (in, out)    [PyTorch Linear / Dense]
+     :out-in         -> shape = (out, in)   [PyTorch Conv2d 权重展平后]
+   对 1D 和 ND (rank >= 3) shape, LAYOUT 无影响。
+   ND 始终按卷积 (out, in, k1, k2, ...) 处理。"))
 
 (defgeneric init-bias (init shape)
   (:documentation "初始化偏置张量.")
   (:method ((init initializer) shape)
     (declare (ignore init)) (vt-zeros shape)))
-
 
 (defclass regularizer ()
   ((name :initarg :name

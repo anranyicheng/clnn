@@ -154,7 +154,9 @@
                          (init-weight
                           init
                           (list out-c (* in-c kh kw))
-                          :fan-in fan-in :fan-out fan-out)
+			  :layout out-in
+                          :fan-in fan-in
+			  :fan-out fan-out)
                          (list out-c in-c kh kw))))))
          (b (when (conv-use-bias-p l)
               (or (conv-bias l)
