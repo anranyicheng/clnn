@@ -278,6 +278,7 @@
     (setf (one-cycle-base-lr s)
           (/ max-lr (one-cycle-div-factor s)))
     (setf (scheduler-last-lr s) (optimizer-lr optimizer))
+    (setf (optimizer-lr optimizer) (one-cycle-base-lr s))
     s))
 
 (defmethod scheduler-step! ((s one-cycle-lr)
