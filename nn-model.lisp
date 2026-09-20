@@ -257,6 +257,113 @@
      (if (> c 0.0d0) xi yi))
    condition x y))
 
+;;; ------------------------------------------------------------------
+;;; 张量工具族（补齐此前「导出但无定义」的符号）
+;;; ------------------------------------------------------------------
+
+(defun tensor-softmax (x &key (axis -1) dtype out)
+  "沿 AXIS 做 softmax（封装 vt-softmax）。"
+  (vt-softmax x :axis axis :dtype dtype :out out))
+
+(defun tensor-log-softmax (x &key (axis -1) dtype out)
+  "沿 AXIS 做 log-softmax（封装 vt-log-softmax）。"
+  (vt-log-softmax x :axis axis :dtype dtype :out out))
+
+(defun tensor-gather (x indices &key axis)
+  "按索引取值。AXIS 为 NIL 时按展平索引取，否则沿 AXIS gather。
+   等价于 torch.gather 的「沿轴取」用法（封装 vt-take）。"
+  (vt-take x indices :axis axis))
+
+(defun tensor-scatter (x indices values &key (mode :raise))
+  "按【展平索引】就地写入 VALUES（封装 vt-put，对标 numpy.put）。
+   注意：这不是 torch.scatter 的逐维语义，仅支持展平索引写入。"
+  (vt-put x indices values :mode mode))
+
+(defun tensor-pad (x pad-width &key (mode :constant) (constant-values 0))
+  "填充张量。MODE ∈ {:constant :edge :wrap :reflect :symmetric}。"
+  (vt-pad x pad-width :mode mode :constant-values constant-values))
+
+(defun tensor-repeat (x repeats &key axis)
+  "重复元素（对标 numpy.repeat）。"
+  (vt-repeat x repeats :axis axis))
+
+(defun tensor-tile (x reps)
+  "平铺构造新数组（对标 numpy.tile）。"
+  (vt-tile x reps))
+
+;;; ------------------------------------------------------------------
+;;; FLOPs / 参数量估算
+;;; ------------------------------------------------------------------
+
+(defun flops-estimate (model &optional input-shape)
+  "估算模型单次前向的乘加次数 (MACs) 与参数量，返回 (values MACS PARAMS)。
+
+   INPUT-SHAPE 用于推断卷积层空间尺寸与注意力序列长度；缺失时这些层计 0。
+   覆盖 dense / conv2d / embedding / lstm / gru / multi-head-attention /
+   transformer-block / batch-norm / layer-norm，其余层计 0。
+   这是量级估算，不是逐算子精确计数（例如未计入激活函数与逐元素运算）。"
+  (let ((macs 0) (params 0) (hw nil) (seq nil))
+    (when input-shape
+      (let ((rank (length input-shape)))
+        (cond ((= rank 4) (setf hw (list (third input-shape) (fourth input-shape))))
+              ((= rank 3) (setf seq (second input-shape))))))
+    (labels ((walk (obj)
+               (cond
+                 ((typep obj 'sequential) (dolist (l (seq-layers obj)) (walk l)))
+                 ((typep obj 'residual) (walk (residual-block obj)))
+                 ((typep obj 'transformer-block)
+                  (walk (tb-mha obj)) (walk (tb-ffn1 obj)) (walk (tb-ffn2 obj))
+                  (walk (tb-ln1 obj)) (walk (tb-ln2 obj)))
+                 ((typep obj 'dense)
+                  (let ((i (dense-in-dim obj)) (o (dense-out-dim obj)))
+                    (when (and i o)
+                      (incf macs (* i o))
+                      (incf params (+ (* i o)
+                                      (if (dense-use-bias-p obj) o 0))))))
+                 ((typep obj 'conv2d)
+                  (let ((w (conv-weights obj)))
+                    (when w
+                      (destructuring-bind (oc ic kh kw) (vt-shape w)
+                        (incf params (vt-size w))
+                        (when (and hw (not (conv-use-bias-p obj)) t)
+                          (incf params oc))
+                        (when hw
+                          (let* ((h (first hw)) (wi (second hw))
+                                 (ph (first (conv-padding obj)))
+                                 (pw (second (conv-padding obj)))
+                                 (sh (first (conv-stride obj)))
+                                 (sw (second (conv-stride obj)))
+                                 (oh (1+ (floor (- (+ h (* 2 ph)) kh) sh)))
+                                 (ow (1+ (floor (- (+ wi (* 2 pw)) kw) sw))))
+                            (incf macs (* oc ic kh kw oh ow))))))))
+                 ((typep obj 'embedding)
+                  (incf params (* (emb-num-embeddings obj)
+                                  (emb-embedding-dim obj))))
+                 ((typep obj 'lstm)
+                  (let ((is (lstm-input-size obj)) (hs (lstm-hidden-size obj)))
+                    (when (and is hs)
+                      (incf macs (* 4 hs (+ is hs)))
+                      (incf params (* 4 hs (+ is hs 2))))))
+                 ((typep obj 'gru)
+                  (let ((is (gru-input-size obj)) (hs (gru-hidden-size obj)))
+                    (when (and is hs)
+                      (incf macs (* 3 hs (+ is hs)))
+                      (incf params (* 3 hs (+ is hs 2))))))
+                 ((typep obj 'multi-head-attention)
+                  (let ((d (mha-embed-dim obj)))
+                    (incf params (* 4 d d))
+                    (when seq (incf macs (* 4 seq d d)))))
+                 ((typep obj 'layer-norm)
+                  (when (ln-affine-p obj)
+                    (incf params (* 2 (reduce #'* (ln-normalized-shape obj))))))
+                 ((typep obj 'batch-norm)
+                  (when (bn-affine-p obj)
+                    (incf params (* 2 (bn-num-features obj)))))
+                 (t nil))))
+      (walk model))
+    (values macs params)))
+
+
 ;;; ============================================================
 ;;; 模型序列化：layer <-> plist (基于 CLOS 泛型分发)
 ;;; ============================================================
@@ -470,6 +577,15 @@
         :bias-ih   (%serialize-vt (gru-bias-ih   l))
         :bias-hh   (%serialize-vt (gru-bias-hh   l))))
 
+;;; ---------- rnn-sequence ----------
+
+(defmethod layer->plist ((l rnn-sequence))
+  (list :type 'rnn-sequence
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        ;; params / grads 都委托给 cell，因此序列化 cell 即可
+        :cell (layer->plist (rnn-seq-cell l))))
+
 ;;; ---------- Attention ----------
 
 (defmethod layer->plist ((l multi-head-attention))
@@ -488,6 +604,12 @@
         :b-k (%serialize-vt (mha-bk l))
         :b-v (%serialize-vt (mha-bv l))
         :b-o (%serialize-vt (mha-bo l))))
+
+(defmethod layer->plist ((l scaled-dot-product-attention))
+  (list :type 'scaled-dot-product-attention
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)
+        :dropout-rate (sdpa-dropout-rate l)))
 
 ;;; ---------- 兼容层 ----------
 
@@ -676,6 +798,14 @@
          (setf (gru-bias-hh   g) (%restore-vt (getf p :bias-hh)))
          g))
 
+      (rnn-sequence
+       ;; P1-4: 此前 layer->plist 无此方法、plist->layer 的 ecase 无此分支，
+       ;; 含 rnn-sequence 的模型无法保存/加载。
+       (make-instance 'rnn-sequence
+                      :cell (plist->layer (getf p :cell))
+                      :name name
+                      :trainable trainable))
+
       ;; ---------- Attention ----------
       (multi-head-attention
        (let ((m (make-multi-head-attention
@@ -694,6 +824,11 @@
          (setf (mha-bv m) (%restore-vt (getf p :b-v)))
          (setf (mha-bo m) (%restore-vt (getf p :b-o)))
          m))
+
+      (scaled-dot-product-attention
+       (make-scaled-dot-product-attention
+        :dropout-rate (getf p :dropout-rate)
+        :name name :trainable trainable))
 
       ;; ---------- 兼容层 ----------
       (neural-network-compat
@@ -1018,6 +1153,12 @@
     (when (mha-bo source) (setf (mha-bo copy) (vt-copy (mha-bo source))))
     copy))
 
+(defmethod copy-network ((source scaled-dot-product-attention))
+  (make-scaled-dot-product-attention
+   :dropout-rate (sdpa-dropout-rate source)
+   :name (copy-layer-name source)
+   :trainable (layer-trainable-p source)))
+
 ;;; ---------- 兼容层 ----------
 
 (defmethod copy-network ((source neural-network-compat))
@@ -1031,78 +1172,67 @@
     copy))
 
 (defun tensor-top-k (x k &key (axis -1))
-  "返回 top-k 值和索引."
+  "沿 AXIS 取 top-k（默认最后一维），返回 (values 值张量 索引张量)。
+   索引张量为 :int64，与 torch.topk 对齐。
+
+   语义：对除 AXIS 之外的每个位置（切片 × 尾部），独立地在该轴方向上排序取前 K。
+   实现要点：把张量视作 [切片][AXIS][尾部] 三段，
+   元素 (s, i, t) 的扁平下标 = s*AXIS*尾部 + i*尾部 + t；
+   对每个 (s, t) 做一次部分选择排序，避免整体排序。
+
+   （原实现按 tail 块排序、且只取块首元素作键，导致 AXIS 不是最后一维时结果错误。）"
   (let* ((shape (vt-shape x))
          (rank (length shape))
-         (actual-axis
-           (if (< axis 0) (+ rank axis) axis))
+         (actual-axis (if (< axis 0) (+ rank axis) axis))
          (axis-size (nth actual-axis shape))
          (effective-k (min k axis-size))
-         (out-shape
-           (let ((s (copy-list shape)))
-             (setf (nth actual-axis s)
-                   effective-k)
-             s))
-         (tail-size
-           (if (= actual-axis (1- rank))
-               1
-               (reduce #'*
-                       (subseq shape
-                               (1+ actual-axis)))))
-         (num-slices
-           (if (= actual-axis 0)
-               1
-               (reduce #'*
-                       (subseq shape 0 actual-axis))))
+         (out-shape (let ((s (copy-list shape)))
+                      (setf (nth actual-axis s) effective-k)
+                      s))
+         (tail-size (if (= actual-axis (1- rank))
+                        1
+                        (reduce #'* (subseq shape (1+ actual-axis)))))
+         (num-slices (if (= actual-axis 0)
+                         1
+                         (reduce #'* (subseq shape 0 actual-axis))))
          (slice-size (* axis-size tail-size))
          (out-slice-size (* effective-k tail-size))
-         (flat-x (vt-flatten x))
-         (data (vt-data flat-x))
-         (data-off (vt-offset flat-x))
+         (flat (vt-flatten x))            ; vt-flatten 返回逻辑顺序的副本
+         (data (vt-data flat))
+         (off (vt-offset flat))
          (total-out (reduce #'* out-shape))
-         (result-vals
-           (make-array total-out
-                       :element-type 'double-float))
-         (result-idxs
-           (make-array total-out
-                       :element-type 'fixnum)))
+         (result-vals (make-array total-out :element-type 'double-float))
+         (result-idxs (make-array total-out :element-type 'fixnum))
+         (cand (make-array axis-size :element-type 'double-float))
+         (cand-idx (make-array axis-size :element-type 'fixnum)))
     (dotimes (s num-slices)
       (let ((slice-start (* s slice-size))
             (dst-start (* s out-slice-size)))
-        (let ((block-reps '()))
+        (dotimes (ti tail-size)
+          ;; 收集该 (切片, 尾部位置) 上沿 AXIS 的全部候选
           (dotimes (i axis-size)
-            (let ((offset
-                    (+ slice-start
-                       (* i tail-size))))
-              (push (cons (aref data (+ data-off offset)) i)
-                    block-reps)))
-          (setf block-reps
-                (sort block-reps #'> :key #'car))
-          (dotimes (i effective-k)
-            (let* ((src-axis-idx
-                     (cdr (nth i block-reps)))
-                   (src-offset
-                     (+ slice-start
-                        (* src-axis-idx tail-size)))
-                   (dst-offset
-                     (+ dst-start (* i tail-size))))
-              (dotimes (j tail-size)
-                (setf (aref result-vals
-                            (+ dst-offset j))
-                      (aref data
-                            (+ data-off src-offset j)))
-                (setf (aref result-idxs
-                            (+ dst-offset j))
-                      src-axis-idx)))))))
+            (setf (aref cand i)
+                  (coerce (aref data (+ off slice-start (* i tail-size) ti))
+                          'double-float)
+                  (aref cand-idx i) i))
+          ;; 部分选择排序：依次把第 kk 大换到位置 kk
+          (dotimes (kk effective-k)
+            (let ((best kk))
+              (loop for i from (1+ kk) below axis-size
+                    when (> (aref cand i) (aref cand best))
+                      do (setf best i))
+              (unless (= best kk)
+                (rotatef (aref cand kk) (aref cand best))
+                (rotatef (aref cand-idx kk) (aref cand-idx best)))
+              (setf (aref result-vals (+ dst-start (* kk tail-size) ti))
+                    (aref cand kk)
+                    (aref result-idxs (+ dst-start (* kk tail-size) ti))
+                    (aref cand-idx kk)))))))
     (values
-     (vt-reshape
-      (vt-from-sequence
-       (coerce result-vals 'list))
-      out-shape)
-     (vt-reshape
-      (vt-from-sequence
-       (coerce result-idxs 'list))
-      out-shape))))
+     (vt-reshape (vt-from-sequence (coerce result-vals 'list)) out-shape)
+     (vt-reshape (vt-from-sequence (coerce result-idxs 'list) :dtype :int64)
+                 out-shape))))
+
 
 ;; ---- zero-grad! 重写：基于 grad-slots 泛型函数 + zero-grad-children 递归，
 ;; ---- 不再依赖 slot 名字白名单启发式，多层同类网络（如多个 dense/conv/lstm）
@@ -1130,7 +1260,9 @@
      实现 grad-slots 方法即可被正确清零。")
   (:method ((component null)) nil)
   (:method ((component t))
-    (when (and (typep component 'layer) (layer-trainable-p component))
+    ;; P1-1: 梯度清零与「是否参与更新」解耦。冻结层同样要清零，
+    ;; 否则上一次的陈旧梯度会在 update 时被重新施加。
+    (when (typep component 'layer)
       (dolist (slot-name (grad-slots component))
         (when (and (slot-boundp component slot-name)
                    (vt-p (slot-value component slot-name)))
@@ -1144,18 +1276,26 @@
   "zero-grad! 的别名."
   (zero-grad! model))
 
+(defgeneric transient-cache-slots (component)
+  (:documentation "返回「可以在 forward 与 backward 之间安全丢弃」的缓存 slot。
+   默认 '()：本库几乎所有前向缓存都是反向传播必需的（例如 dense 的
+   INPUT-CACHE、max-pool2d 的 argmax mask、mha 的 cache）。
+   因此 CLEAR-FORWARD-CACHE! 默认什么都不清 —— 这是刻意的：
+   任何在 forward 与 backward 之间丢掉的缓存都会让 backward 失败。
+   真正的前向缓存由 CACHE-SLOTS 列出，只能在一次完整的
+   forward + backward 之后由 CLEAR-STEP-CACHES! 清理。")
+  (:method ((c t)) '()))
+
 (defgeneric clear-forward-cache! (component)
-  (:documentation "清空前向传播产生的中间缓存。
-只清理 cache-slots 显式列出的 slot，仅保留参数、梯度和反向传播依赖的
-整型/配置状态（batch-size / norm-size / state 等）。
-实现与 zero-grad! 风格一致：
-  - 叶子层通过 cache-slots 返回自己的缓存 slot 名列表；
-  - 容器层（sequential / residual / transformer-block）通过本方法递归子层。
-用户自定义新层只需实现 cache-slots 方法即可被正确清理。")
+  (:documentation "【可在任意时刻安全调用】只清理 TRANSIENT-CACHE-SLOTS 列出的缓存。
+   由于本库的前向缓存几乎都被反向传播依赖，本函数默认是空操作。
+   若要在一次完整训练步之后回收内存，请使用 CLEAR-STEP-CACHES!。
+   （历史行为：本函数曾清理全部 CACHE-SLOTS，导致 forward 与 backward
+     之间调用它必然让 backward 崩溃；现已修正。）")
   (:method ((component null)) nil)
   (:method ((component t)) nil)
   (:method ((component layer))
-    (dolist (slot-name (cache-slots component))
+    (dolist (slot-name (transient-cache-slots component))
       (when (slot-boundp component slot-name)
         (setf (slot-value component slot-name) nil))))
   (:method ((component sequential))
@@ -1173,6 +1313,33 @@
                        (tb-drop1 component)
                        (tb-drop2 component)))
       (when sub (clear-forward-cache! sub)))))
+
+(defgeneric clear-step-caches! (component)
+  (:documentation "清除【全部】前向缓存以回收内存。
+   ⚠ 只能在一次完整的 forward + backward 之后调用；
+   在 forward 与 backward 之间调用会让 backward 因缓存缺失而失败。
+   实现与 ZERO-GRAD! 同构：叶子层看 CACHE-SLOTS，容器层递归子层。")
+  (:method ((component null)) nil)
+  (:method ((component t)) nil)
+  (:method ((component layer))
+    (dolist (slot-name (cache-slots component))
+      (when (slot-boundp component slot-name)
+        (setf (slot-value component slot-name) nil))))
+  (:method ((component sequential))
+    (dolist (layer (seq-layers component))
+      (clear-step-caches! layer)))
+  (:method ((component residual))
+    (when (residual-block component)
+      (clear-step-caches! (residual-block component))))
+  (:method ((component transformer-block))
+    (dolist (sub (list (tb-mha component)
+                       (tb-ffn1 component)
+                       (tb-ffn2 component)
+                       (tb-ln1 component)
+                       (tb-ln2 component)
+                       (tb-drop1 component)
+                       (tb-drop2 component)))
+      (when sub (clear-step-caches! sub)))))
 
 (defun build-model (model &optional dummy-input)
   "强制初始化模型中所有延迟参数.
@@ -1204,8 +1371,10 @@
   (when dummy-input
     (forward model dummy-input))
 
-  ;; 3. 核心步骤：清理 dry-run 留下的所有垃圾缓存
-  (clear-forward-cache! model)
+  ;; 3. 核心步骤：清理 dry-run 留下的所有垃圾缓存。
+  ;;    dry-run 之后不接 backward，所以用「清全部」的 CLEAR-STEP-CACHES!，
+  ;;    而不是只清可丢弃缓存的 CLEAR-FORWARD-CACHE!。
+  (clear-step-caches! model)
 
   model)
 
@@ -1219,6 +1388,11 @@
   (call-next-method)
   (when (rnn-seq-cell l)
     (clear-forward-cache! (rnn-seq-cell l))))
+
+(defmethod clear-step-caches! ((l rnn-sequence))
+  (call-next-method)
+  (when (rnn-seq-cell l)
+    (clear-step-caches! (rnn-seq-cell l))))
 
 (defmethod copy-network ((source rnn-sequence))
   (let ((copy (make-rnn-sequence

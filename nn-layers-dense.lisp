@@ -296,9 +296,12 @@
 
 (defmethod grads ((l dense))
   (let ((result '()))
-    (when (dense-dw l)
+    ;; P1-2: 与 PARAMS 严格同构 —— 只要 PARAMS 会返回该项，这里就返回一项
+    ;; （梯度尚未算出时 tensor 为 NIL）。否则两个列表长度不等，
+    ;; 优化器按位置配对时会用别的层的梯度更新本层参数。
+    (when (dense-weights l)
       (push (cons "weights" (dense-dw l)) result))
-    (when (and (dense-use-bias-p l) (dense-db l))
+    (when (and (dense-use-bias-p l) (dense-bias l))
       (push (cons "bias" (dense-db l)) result))
     (nreverse result)))
 

@@ -27,7 +27,12 @@
        :type (or null vt))
    ;; 缓存
    (indices-cache :initarg :indices-cache
-		  :accessor emb-indices-cache))
+		  :accessor emb-indices-cache)
+   ;; max-norm 重归一化的逐行缩放系数，形状 (num-embeddings,)；
+   ;; 未启用 max-norm 时为 NIL。反向传播需要它来还原梯度尺度。
+   (norm-scale :initarg :norm-scale
+               :initform nil
+               :accessor emb-norm-scale))
   (:documentation "词嵌入层."))
 
 (defun make-embedding
@@ -41,6 +46,30 @@
 		 :scale-grad-by-freq scale-grad-by-freq
 		 :name name :trainable trainable))
 
+(defun renorm-embedding-weights! (l)
+  "按 PyTorch 语义就地重归一化嵌入矩阵：
+   对 L2 范数超过 MAX-NORM 的行缩放到 MAX-NORM，
+   并把逐行缩放系数缓存到 EMB-NORM-SCALE，供反向传播还原梯度尺度。
+   （原实现里 MAX-NORM 只被存储/序列化，从未生效。）"
+  (let* ((w (emb-weight l))
+         (ne (emb-num-embeddings l))
+         (ed (emb-embedding-dim l))
+         (max-norm (coerce (emb-max-norm l) 'double-float))
+         (scale (vt-ones (list ne))))
+    (dotimes (i ne)
+      (let ((sq 0.0d0))
+        (dotimes (j ed)
+          (let ((v (coerce (vt-ref w i j) 'double-float)))
+            (incf sq (* v v))))
+        (let ((norm (sqrt sq)))
+          (when (and (> norm max-norm) (plusp norm))
+            (let ((s (/ max-norm norm)))
+              (setf (vt-ref scale i) s)
+              (dotimes (j ed)
+                (setf (vt-ref w i j)
+                      (* s (coerce (vt-ref w i j) 'double-float)))))))))
+    (setf (emb-norm-scale l) scale)))
+
 (defmethod forward ((l embedding) indices)
   "前向传播: 查表获取嵌入向量."
   ;; 延迟初始化权重
@@ -53,6 +82,9 @@
            0.01d0)))
   ;; 先缓存 indices
   (setf (emb-indices-cache l) indices)
+  ;; max-norm 重归一化（就地缩放超限行，并缓存逐行系数）
+  (when (emb-max-norm l)
+    (renorm-embedding-weights! l))
   (let* ((weights (emb-weight l))
          (edim (emb-embedding-dim l))
          (idx-shape (vt-shape indices))
@@ -81,12 +113,21 @@
                        (incf (gethash idx ht 0))))
                    ht)))
          (dw (or (emb-dw l)
-                 (vt-zeros (list ne ed)))))
+                 (vt-zeros (list ne ed))))
+         (norm-scale (emb-norm-scale l)))
     (dotimes (i flat-size)
       (let* ((idx-val (coerce (vt-ref flat-idx i) 'fixnum))
-             (scale (if freq
-                        (/ 1.0d0 (coerce (gethash idx-val freq) 'double-float))
-                        1.0d0)))
+             (freq-scale (if freq
+                             (/ 1.0d0 (coerce (gethash idx-val freq) 'double-float))
+                             1.0d0))
+             ;; max-norm 生效时，前向把该行缩放了 s 倍，
+             ;; 反向必须乘回 s 才是正确的梯度尺度。
+             (renorm-scale (if (and norm-scale
+                                    (>= idx-val 0)
+                                    (< idx-val ne))
+                               (coerce (vt-ref norm-scale idx-val) 'double-float)
+                               1.0d0))
+             (scale (* freq-scale renorm-scale)))
         (dotimes (j ed)
           (setf (vt-ref dw idx-val j)
                 (+ (vt-ref dw idx-val j)
@@ -101,11 +142,12 @@
                     (setf (emb-weight l) v))))))
 
 (defmethod grads ((l embedding))
-  (when (emb-dw l)
+  ;; P1-2: 与 PARAMS 同构（PARAMS 以 emb-weight 是否存在为准）。
+  (when (emb-weight l)
     (list (cons "weight" (emb-dw l)))))
 
 ;; ---- grad-slots ----
 (defmethod grad-slots ((l embedding)) '(dw))
 
 (defmethod cache-slots ((l embedding))
-  '(indices-cache))
+  '(indices-cache norm-scale))

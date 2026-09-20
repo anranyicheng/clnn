@@ -1,13 +1,41 @@
 (in-package #:nn)
 
 (defun clip-gradient (grad clip)
-  "计算 L2 Norm 并裁剪梯度."
+  "对【单个】梯度张量做 L2 裁剪。
+   注意：优化器的 grad-clip 语义已改为全局范数裁剪（见 GLOBAL-CLIP-COEFF），
+   本函数仅作为单张量工具保留，不要用于 optimizer-step。"
   (if (> clip 0.0d0)
       (let ((gnorm (sqrt (vt-item (vt-sum (vt-square grad))))))
         (if (> gnorm clip)
             (vt-scale grad (/ clip gnorm))
             grad))
       grad))
+
+;;; ------------------------------------------------------------------
+;;; 全局梯度范数裁剪
+;;; ------------------------------------------------------------------
+;;; PyTorch 的 clip_grad_norm_ 用的是「所有参数梯度的全局 L2 范数」，
+;;; 而不是逐个参数张量各自裁剪。这里提供全局版本，
+;;; 各优化器在 optimizer-step 开头调用一次。
+
+(defun global-grad-norm (grad-list)
+  "GRAD-LIST 中所有梯度张量的全局 L2 范数。"
+  (let ((sq 0.0d0))
+    (dolist (g grad-list (sqrt sq))
+      (let ((tensor (cdr g)))
+        (when tensor
+          (incf sq (vt-item (vt-sum (vt-square tensor)))))))))
+
+(defun global-clip-coeff (grad-list clip)
+  "全局范数裁剪系数。CLIP <= 0 时返回 1.0（不裁剪）。"
+  (if (<= clip 0.0d0)
+      1.0d0
+      (let ((n (global-grad-norm grad-list)))
+        (if (> n clip) (/ clip n) 1.0d0))))
+
+(defun apply-clip (grad coeff)
+  "按系数缩放梯度；COEFF = 1.0 时原样返回。"
+  (if (= coeff 1.0d0) grad (vt-scale grad coeff)))
 
 (defclass sgd (optimizer)
   ((momentum :initarg :momentum
@@ -27,21 +55,23 @@
                  :weight-decay (or weight-decay 0.0d0)))
 
 (defmethod optimizer-step ((opt sgd) param-list grad-list)
-  (let ((lr (optimizer-lr opt))
+  ;; 用 let* ：CLIP-COEFF 的初值依赖上面的 CLIP
+  (let* ((lr (optimizer-lr opt))
         (mu (sgd-momentum opt))
         (wd (optimizer-weight-decay opt))
         (clip (optimizer-grad-clip opt))
+        (clip-coeff (global-clip-coeff grad-list clip))
         (registry (optimizer-state-registry opt)))
     (loop for p in param-list
           for (gname . grad) in grad-list
-          for idx upfrom 0
           for owner = (first p)
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          when (and param grad)
-            do (let* ((base-key (list owner name idx))
-                      (g (clip-gradient grad clip))
+          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
+          when (and param grad (layer-trainable-p owner))
+            do (let* ((base-key (list owner name))
+                      (g (apply-clip grad clip-coeff))
                       (g-reg (if (> wd 0.0d0)
                                  (vt-+ g (vt-scale param wd))
                                  g))
@@ -53,6 +83,14 @@
                                    (vt-+ g-reg (vt-scale new-buf mu))
                                    new-buf)))
                    (funcall setter (vt-- param (vt-scale update lr))))))))
+
+(defun make-sgd-momentum (&key lr (momentum 0.9d0) nesterov
+                            grad-clip weight-decay)
+  "带动量的 SGD。等价于 (make-sgd :momentum MOMENTUM ...)，MOMENTUM 默认 0.9。
+   注：导出的 SGD-MOMENTUM 符号已是 SGD 类的动量访问器，
+   因此这里不再单独定义 sgd-momentum 类。"
+  (make-sgd :lr lr :momentum momentum :nesterov nesterov
+            :grad-clip grad-clip :weight-decay weight-decay))
 
 (defclass adam (optimizer)
   ((beta1 :initarg :beta1
@@ -81,27 +119,29 @@
                  :weight-decay (or weight-decay 0.0d0)))
 
 (defmethod optimizer-step ((opt adam) param-list grad-list)
-  (let ((lr (optimizer-lr opt))
+  ;; 用 let* ：CLIP-COEFF 的初值依赖上面的 CLIP
+  (let* ((lr (optimizer-lr opt))
         (b1 (adam-beta1 opt))
         (b2 (adam-beta2 opt))
         (eps (adam-eps opt))
         (wd (optimizer-weight-decay opt))
         (clip (optimizer-grad-clip opt))
+        (clip-coeff (global-clip-coeff grad-list clip))
         (tt (incf (optimizer-step-count opt)))
         (registry (optimizer-state-registry opt)))
     (loop for p in param-list
           for (gname . grad) in grad-list
-          for idx upfrom 0
 	  for owner = (first p)
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          when (and param grad)
-            do (let* ((base-key (list owner name idx))
+          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
+          when (and param grad (layer-trainable-p owner))
+            do (let* ((base-key (list owner name))
                       (key-m (list base-key 'm))
                       (key-v (list base-key 'v))
                       (key-vmax (list base-key 'vmax))
-                      (g (clip-gradient grad clip))
+                      (g (apply-clip grad clip-coeff))
                       (g-reg (if (> wd 0.0d0)
 				 (vt-+ g (vt-scale param wd))
 				 g))
@@ -161,26 +201,28 @@
                  :weight-decay (or weight-decay 0.01d0)))
 
 (defmethod optimizer-step ((opt adamw) param-list grad-list)
-  (let ((lr (optimizer-lr opt))
+  ;; 用 let* ：CLIP-COEFF 的初值依赖上面的 CLIP
+  (let* ((lr (optimizer-lr opt))
         (b1 (adam-beta1 opt))
         (b2 (adam-beta2 opt))
         (eps (adam-eps opt))
         (wd (optimizer-weight-decay opt))
         (clip (optimizer-grad-clip opt))
+        (clip-coeff (global-clip-coeff grad-list clip))
         (tt (incf (optimizer-step-count opt)))
         (registry (optimizer-state-registry opt)))
     (loop for p in param-list
           for (gname . grad) in grad-list
-          for idx upfrom 0
 	  for owner = (first p)
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          when (and param grad)
-            do (let* ((base-key (list owner name idx))
+          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
+          when (and param grad (layer-trainable-p owner))
+            do (let* ((base-key (list owner name))
                       (key-m (list base-key 'm))
                       (key-v (list base-key 'v))
-                      (g (clip-gradient grad clip))
+                      (g (apply-clip grad clip-coeff))
                       (bc1 (/ 1.0d0 (- 1.0d0 (expt b1 tt))))
                       (bc2 (/ 1.0d0 (- 1.0d0 (expt b2 tt)))))
 		 ;; 一阶矩 (无 wd)
@@ -237,26 +279,28 @@
                  :weight-decay (or weight-decay 0.0d0)))
 
 (defmethod optimizer-step ((opt rmsprop) param-list grad-list)
-  (let ((lr (optimizer-lr opt))
+  ;; 用 let* ：CLIP-COEFF 的初值依赖上面的 CLIP
+  (let* ((lr (optimizer-lr opt))
         (alpha (rmsprop-alpha opt))
         (eps (rmsprop-eps opt))
         (clip (optimizer-grad-clip opt))
+        (clip-coeff (global-clip-coeff grad-list clip))
         (mom (rmsprop-momentum opt))
         (wd (optimizer-weight-decay opt))
         (registry (optimizer-state-registry opt)))
     (loop for p in param-list
           for (gname . grad) in grad-list
-          for idx upfrom 0
 	  for owner = (first p)
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          when (and param grad)
-            do (let* ((base-key (list owner name idx))
+          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
+          when (and param grad (layer-trainable-p owner))
+            do (let* ((base-key (list owner name))
                       (key-v (list base-key 'v))
                       (key-mg (list base-key 'mg))
                       (key-buf (list base-key 'buf))
-                      (g (clip-gradient grad clip))
+                      (g (apply-clip grad clip-coeff))
                       (g-reg (if (> wd 0.0d0)
                                  (vt-+ g (vt-scale param wd))
                                  g))
@@ -326,20 +370,21 @@
   (let* ((lr (optimizer-lr opt))
          (eps (adagrad-eps opt))
          (clip (optimizer-grad-clip opt))
+         (clip-coeff (global-clip-coeff grad-list clip))
          (wd (optimizer-weight-decay opt))
          (tt (incf (optimizer-step-count opt)))
          (registry (optimizer-state-registry opt)))
     (loop for p in param-list
           for (gname . grad) in grad-list
-          for idx upfrom 0
 	  for owner = (first p)
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          when (and param grad)
-            do (let* ((base-key (list owner name idx))
+          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
+          when (and param grad (layer-trainable-p owner))
+            do (let* ((base-key (list owner name))
                       (key-v (list base-key 'v))
-                      (g (clip-gradient grad clip))
+                      (g (apply-clip grad clip-coeff))
                       (g-reg (if (> wd 0.0d0)
                                  (vt-+ g (vt-scale param wd))
                                  g))

@@ -11,7 +11,7 @@
        :vt-zeros :vt-ones :vt-ones-like :vt-zeros-like
        :vt-const :vt-arange :vt-random :vt-random-normal
        :vt-transpose :vt-reshape :vt-squeeze :vt-split
-       :vt-copy :vt-contiguous
+       :vt-copy :vt-contiguous :vt-contiguous-p
        :vt-ref :vt-slice :vt-do-each :vt-map :vt-reduce
        :vt-amax :vt-item
        :vt-+ :vt-- :vt-* :vt-/ :vt-scale :vt-=
@@ -32,6 +32,7 @@
        :vt-inv :vt-det :vt-solve :vt-trace
        :vt-take :vt-eye
        :vt-copy-into :vt-flatten
+   :vt-pad :vt-repeat :vt-tile :vt-put
        :vt-random-uniform
        )
   (:export
@@ -149,6 +150,41 @@
    :with-training
    :grad-slots :zero-grad-children
    :reset-rnn-cell-state!
+   :transient-cache-slots :clear-step-caches!
+
+   ;; ============= 此前遗漏的公共 API（P2-3）=============
+   ;; 训练/推理模式
+   :set-global-training! :set-model-training! :layer-training
+   ;; 模型构建与缓存管理
+   :build-model :clear-forward-cache! :clear-all-gradients!
+   ;; 序列 RNN 包装层（此前完全不可达）
+   :rnn-sequence :make-rnn-sequence :rnn-seq-cell
+   ;; 损失与优化器访问器
+   :compute-loss :compute-loss-gradient :loss-name :loss-reduction
+   :optimizer-lr :optimizer-grad-clip :optimizer-weight-decay
+   :optimizer-step-count :optimizer-state-registry :optimizer-step
+   :scheduler-optimizer :scheduler-last-lr :scheduler-step-count
+   ;; 层访问器
+   :dense-in-dim :dense-out-dim :dense-weights :dense-bias
+   :dense-activation :dense-use-bias-p
+   :conv-in-channels :conv-out-channels :conv-kernel-size
+   :conv-stride :conv-padding :conv-weights :conv-bias :conv-use-bias-p
+   :emb-weight :emb-num-embeddings :emb-embedding-dim
+   :bn-num-features :bn-gamma :bn-beta :bn-running-mean :bn-running-var
+   :ln-normalized-shape :ln-gamma :ln-beta
+   :activation-kind :act-leaky-alpha
+   :pool-kernel-size :pool-stride :pool-padding
+   :lstm-input-size :lstm-hidden-size
+   :gru-input-size :gru-hidden-size
+   :rnn-input-size :rnn-hidden-size
+   :mha-embed-dim :mha-num-heads :mha-head-dim
+   :tb-embed-dim :tb-num-heads :tb-ffn-dim
+   :seq-layers :seq-layer-names
+   ;; 深拷贝
+   :copy-network
+   ;; 其它
+   :neural-network-compat :stop-gradient-node :vt-stop-gradient
+   :sdpa-dropout-rate
 
    ;; ============= 激活函数名称枚举 =============
    :+activation-names+))

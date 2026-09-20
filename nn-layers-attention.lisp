@@ -72,6 +72,51 @@
          (dk (vt-matmul (transpose-last-two d-scores-scaled) q)))
     (values dq dk dv)))
 
+(defclass scaled-dot-product-attention (layer)
+  ((dropout-rate :initarg :dropout-rate
+                 :initform 0.0d0
+                 :accessor sdpa-dropout-rate
+                 :type double-float)
+   (cache :initarg :cache :initform nil :accessor sdpa-cache))
+  (:documentation
+   "无参数的缩放点积注意力包装层（把 SDPA-FORWARD / SDPA-BACKWARD 暴露为层）。
+
+   输入：一个 (Q K V) 三元组，三者形状均为 (batch, seq, dim)；
+         Q 与 K 的最后一维必须相同（head_dim），V 的最后一维决定输出最后一维。
+   输出：(batch, seq-q, dim-v)。
+   dropout 仅在训练模式下生效。
+
+   本层没有可学习参数；带投影的多头版本请用 MULTI-HEAD-ATTENTION。"))
+
+(defun make-scaled-dot-product-attention
+    (&key dropout-rate (name "sdpa") (trainable t))
+  (make-instance 'scaled-dot-product-attention
+                 :dropout-rate (or dropout-rate 0.0d0)
+                 :name name :trainable trainable))
+
+(defmethod forward ((l scaled-dot-product-attention) inputs)
+  (destructuring-bind (q k v) inputs
+    (multiple-value-bind (out attn dropped mask)
+        (sdpa-forward q k v nil (sdpa-dropout-rate l) (training-p l))
+      (setf (sdpa-cache l)
+            (list :q q :k k :v v
+                  :attn attn :dropped dropped :mask mask))
+      out)))
+
+(defmethod backward ((l scaled-dot-product-attention) grad-output)
+  (let* ((c (sdpa-cache l))
+         (q (getf c :q)) (k (getf c :k)) (v (getf c :v))
+         (attn (getf c :attn)) (dropped (getf c :dropped)) (mask (getf c :mask)))
+    (multiple-value-bind (dq dk dv)
+        (sdpa-backward grad-output q k v attn dropped mask)
+      (values dq dk dv))))
+
+(defmethod grad-slots ((l scaled-dot-product-attention)) '())
+
+(defmethod cache-slots ((l scaled-dot-product-attention)) '(cache))
+
+(defmethod zero-grad-children ((l scaled-dot-product-attention)) '())
+
 (defclass multi-head-attention (layer)
   ((embed-dim :initarg :embed-dim
 	      :initform nil
@@ -159,6 +204,11 @@
 (defmethod forward ((l multi-head-attention) inputs)
   (ensure-mha-params l)
   (destructuring-bind (query key value) inputs
+    ;; P2-7: 提前校验秩，避免下游 reshape 抛出「元素总数不一致」这类难定位的错误。
+    (dolist (pair (list (cons "query" query) (cons "key" key) (cons "value" value)))
+      (unless (>= (length (vt-shape (cdr pair))) 3)
+        (error "multi-head-attention: ~a 至少需要 3 维 (batch, seq, dim)，实际为 ~a"
+               (car pair) (vt-shape (cdr pair)))))
     (let* ((shape-q (vt-shape query))
            (batch (first shape-q))
            (seq-q (second shape-q))

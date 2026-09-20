@@ -171,8 +171,14 @@
                             (list out-c (* in-c kh kw))))
          (out-mat (vt-matmul col
                              (vt-transpose w-mat)))
-         (out-reshaped (vt-reshape out-mat
-                                   (list batch out-c oh ow)))
+         ;; out-mat 的行序是 (batch, oh, ow)、列是通道。必须先 reshape 成
+         ;; (batch, oh, ow, out-c)（此时行主序分组与 col 的行顺序一致），
+         ;; 再转置成 (batch, out-c, oh, ow)。
+         ;; 直接 reshape 成 (batch, out-c, oh, ow) 会在 out-c > 1 时
+         ;; 把通道轴与空间轴搅成一个置换，导致输出布局错误。
+         (out-reshaped (vt-transpose
+                        (vt-reshape out-mat (list batch oh ow out-c))
+                        '(0 3 1 2)))
          (out (if b
                   (let ((b-view (vt-reshape b
                                             (list 1 out-c 1 1))))
@@ -201,7 +207,10 @@
          (batch (first out-shape))
          (oh (third out-shape))
          (ow (fourth out-shape))
-         (go-2d (vt-reshape grad-output
+         ;; grad-output 形状为 (batch, out-c, oh, ow)。转成 (batch, oh, ow, out-c)
+         ;; 后再 reshape，行序才是 (batch, oh, ow)，与 col / w-mat 的约定一致；
+         ;; 这样 dw、d-col、db 三者同时正确（原实现三者的分组约定是错位的）。
+         (go-2d (vt-reshape (vt-transpose grad-output '(0 2 3 1))
                             (list (* batch oh ow) out-c)))
          (w-mat (vt-reshape w
                             (list out-c (* in-c kh kw))))
@@ -230,9 +239,10 @@
 
 (defmethod grads ((l conv2d))
   (let ((r '()))
-    (when (conv-dw l)
+    ;; P1-2: 与 PARAMS 严格同构（说明见 dense 的 grads）。
+    (when (conv-weights l)
       (push (cons "weights" (conv-dw l)) r))
-    (when (and (conv-use-bias-p l) (conv-db l))
+    (when (and (conv-use-bias-p l) (conv-bias l))
       (push (cons "bias" (conv-db l)) r))
     (nreverse r)))
 
@@ -268,7 +278,11 @@
 		   :name name :trainable trainable)))
 
 (defmethod forward ((l max-pool2d) input)
-  (let* ((shape (vt-shape input))
+  ;; 本层用 (vt-data input) + 行主序线性索引直接访问底层数组，
+  ;; 隐含假设输入连续。非连续视图（例如 batch-norm 的输出）会读错元素，
+  ;; 因此入口处先归一化为连续内存。
+  (let* ((input (if (vt-contiguous-p input) input (vt-contiguous input)))
+         (shape (vt-shape input))
          (batch (first shape))
 	 (channels (second shape))
          (in-h (third shape))
@@ -384,7 +398,9 @@
 		   :name name :trainable trainable)))
 
 (defmethod forward ((l avg-pool2d) input)
-  (let* ((shape (vt-shape input))
+  ;; 同 max-pool2d：入口处先归一化为连续内存，避免非连续视图读错元素。
+  (let* ((input (if (vt-contiguous-p input) input (vt-contiguous input)))
+         (shape (vt-shape input))
          (batch (first shape))
 	 (channels (second shape))
          (in-h (third shape))

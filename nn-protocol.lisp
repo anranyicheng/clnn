@@ -108,6 +108,11 @@
     (declare (ignore optimizer))))
 
 
+(defun make-loss (&rest args)
+  "损失函数基类的通用构造器（与 MAKE-OPTIMIZER / MAKE-LAYER 对称）。
+   日常请使用具体子类的构造器，如 MAKE-MSE-LOSS / MAKE-CE-LOSS。"
+  (apply #'make-instance 'loss args))
+
 (defclass loss ()
   ((name :initarg :name
 	 :initform "loss"
@@ -164,12 +169,25 @@ GRAD-LIST = ((name . tensor) ...)"))
   (:documentation "清空所有梯度缓存.")
   (:method ((o optimizer)) (values)))
 
+(defparameter +activation-names+
+  '(:none :linear :relu :leaky-relu :sigmoid :tanh :gelu :swish :mish
+    :softplus :hard-tanh :hard-sigmoid :softmax :log-softmax)
+  "本库支持的激活函数名称（:none / :linear 等价）。
+
+   注意：DENSE 层支持其中除 :softmax / :log-softmax 之外的全部取值
+   （softmax 属于 ACTIVATION-LAYER 的职责）。")
+
 (defclass initializer ()
   ((name :initarg :name
 	 :initform "init"
 	 :accessor initializer-name
 	 :type string))
   (:documentation "参数初始化器基类."))
+
+(defun make-initializer (&rest args)
+  "初始化器基类的通用构造器（与 MAKE-OPTIMIZER / MAKE-LAYER 对称）。
+   日常请使用具体子类的构造器，如 MAKE-HE-NORMAL / MAKE-XAVIER-UNIFORM。"
+  (apply #'make-instance 'initializer args))
 
 (defgeneric init-weight (init shape &key fan-in fan-out layout)
   (:documentation "根据 shape 初始化权重张量。

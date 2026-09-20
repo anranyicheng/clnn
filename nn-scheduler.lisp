@@ -109,7 +109,8 @@
   (declare (ignore metric))
   (incf (scheduler-step-count s))
   (let* ((tt (scheduler-step-count s))
-         (t-max (cos-lr-t-max s))
+         ;; P2-2: t-max = 0 时原实现直接除零；至少取 1。
+         (t-max (max 1 (cos-lr-t-max s)))
          (base (cos-lr-base-lr s))
          (eta-min (cos-lr-eta-min s))
          (new-lr (+ eta-min
