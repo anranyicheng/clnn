@@ -49,8 +49,7 @@
 (defun renorm-embedding-weights! (l)
   "按 PyTorch 语义就地重归一化嵌入矩阵：
    对 L2 范数超过 MAX-NORM 的行缩放到 MAX-NORM，
-   并把逐行缩放系数缓存到 EMB-NORM-SCALE，供反向传播还原梯度尺度。
-   （原实现里 MAX-NORM 只被存储/序列化，从未生效。）"
+   并把逐行缩放系数缓存到 EMB-NORM-SCALE，供反向传播还原梯度尺度。"
   (let* ((w (emb-weight l))
          (ne (emb-num-embeddings l))
          (ed (emb-embedding-dim l))
@@ -142,7 +141,7 @@
                     (setf (emb-weight l) v))))))
 
 (defmethod grads ((l embedding))
-  ;; P1-2: 与 PARAMS 同构（PARAMS 以 emb-weight 是否存在为准）。
+  ;; 与 PARAMS 同构（PARAMS 以 emb-weight 是否存在为准）。
   (when (emb-weight l)
     (list (cons "weight" (emb-dw l)))))
 

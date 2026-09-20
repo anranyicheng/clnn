@@ -799,8 +799,6 @@
          g))
 
       (rnn-sequence
-       ;; P1-4: 此前 layer->plist 无此方法、plist->layer 的 ecase 无此分支，
-       ;; 含 rnn-sequence 的模型无法保存/加载。
        (make-instance 'rnn-sequence
                       :cell (plist->layer (getf p :cell))
                       :name name
@@ -1178,9 +1176,7 @@
    语义：对除 AXIS 之外的每个位置（切片 × 尾部），独立地在该轴方向上排序取前 K。
    实现要点：把张量视作 [切片][AXIS][尾部] 三段，
    元素 (s, i, t) 的扁平下标 = s*AXIS*尾部 + i*尾部 + t；
-   对每个 (s, t) 做一次部分选择排序，避免整体排序。
-
-   （原实现按 tail 块排序、且只取块首元素作键，导致 AXIS 不是最后一维时结果错误。）"
+   对每个 (s, t) 做一次部分选择排序，避免整体排序。"
   (let* ((shape (vt-shape x))
          (rank (length shape))
          (actual-axis (if (< axis 0) (+ rank axis) axis))
@@ -1260,7 +1256,7 @@
      实现 grad-slots 方法即可被正确清零。")
   (:method ((component null)) nil)
   (:method ((component t))
-    ;; P1-1: 梯度清零与「是否参与更新」解耦。冻结层同样要清零，
+    ;; 梯度清零与「是否参与更新」解耦。冻结层同样要清零，
     ;; 否则上一次的陈旧梯度会在 update 时被重新施加。
     (when (typep component 'layer)
       (dolist (slot-name (grad-slots component))

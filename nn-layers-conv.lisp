@@ -174,8 +174,6 @@
          ;; out-mat 的行序是 (batch, oh, ow)、列是通道。必须先 reshape 成
          ;; (batch, oh, ow, out-c)（此时行主序分组与 col 的行顺序一致），
          ;; 再转置成 (batch, out-c, oh, ow)。
-         ;; 直接 reshape 成 (batch, out-c, oh, ow) 会在 out-c > 1 时
-         ;; 把通道轴与空间轴搅成一个置换，导致输出布局错误。
          (out-reshaped (vt-transpose
                         (vt-reshape out-mat (list batch oh ow out-c))
                         '(0 3 1 2)))
@@ -209,7 +207,6 @@
          (ow (fourth out-shape))
          ;; grad-output 形状为 (batch, out-c, oh, ow)。转成 (batch, oh, ow, out-c)
          ;; 后再 reshape，行序才是 (batch, oh, ow)，与 col / w-mat 的约定一致；
-         ;; 这样 dw、d-col、db 三者同时正确（原实现三者的分组约定是错位的）。
          (go-2d (vt-reshape (vt-transpose grad-output '(0 2 3 1))
                             (list (* batch oh ow) out-c)))
          (w-mat (vt-reshape w
@@ -239,7 +236,6 @@
 
 (defmethod grads ((l conv2d))
   (let ((r '()))
-    ;; P1-2: 与 PARAMS 严格同构（说明见 dense 的 grads）。
     (when (conv-weights l)
       (push (cons "weights" (conv-dw l)) r))
     (when (and (conv-use-bias-p l) (conv-bias l))

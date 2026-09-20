@@ -50,9 +50,8 @@
       input))
 
 (defmethod backward ((l dropout) grad-output)
-  ;; P1-7: 依据「前向是否真的生成了 mask」分支，而不是反向时的 training-p。
+  ;; 依据「前向是否真的生成了 mask」分支，而不是反向时的 training-p。
   ;; 前后向模式不一致（with-training / set-training! 交叉）时，
-  ;; 原实现会漏乘或错乘 mask。
   (let ((mask (dropout-mask-cache l)))
     (if mask
         (vt-* grad-output mask)

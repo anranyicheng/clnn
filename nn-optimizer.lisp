@@ -55,7 +55,6 @@
                  :weight-decay (or weight-decay 0.0d0)))
 
 (defmethod optimizer-step ((opt sgd) param-list grad-list)
-  ;; 用 let* ：CLIP-COEFF 的初值依赖上面的 CLIP
   (let* ((lr (optimizer-lr opt))
         (mu (sgd-momentum opt))
         (wd (optimizer-weight-decay opt))
@@ -68,7 +67,6 @@
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
           when (and param grad (layer-trainable-p owner))
             do (let* ((base-key (list owner name))
                       (g (apply-clip grad clip-coeff))
@@ -119,7 +117,6 @@
                  :weight-decay (or weight-decay 0.0d0)))
 
 (defmethod optimizer-step ((opt adam) param-list grad-list)
-  ;; 用 let* ：CLIP-COEFF 的初值依赖上面的 CLIP
   (let* ((lr (optimizer-lr opt))
         (b1 (adam-beta1 opt))
         (b2 (adam-beta2 opt))
@@ -135,7 +132,6 @@
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
           when (and param grad (layer-trainable-p owner))
             do (let* ((base-key (list owner name))
                       (key-m (list base-key 'm))
@@ -201,7 +197,6 @@
                  :weight-decay (or weight-decay 0.01d0)))
 
 (defmethod optimizer-step ((opt adamw) param-list grad-list)
-  ;; 用 let* ：CLIP-COEFF 的初值依赖上面的 CLIP
   (let* ((lr (optimizer-lr opt))
         (b1 (adam-beta1 opt))
         (b2 (adam-beta2 opt))
@@ -217,7 +212,6 @@
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
           when (and param grad (layer-trainable-p owner))
             do (let* ((base-key (list owner name))
                       (key-m (list base-key 'm))
@@ -279,7 +273,6 @@
                  :weight-decay (or weight-decay 0.0d0)))
 
 (defmethod optimizer-step ((opt rmsprop) param-list grad-list)
-  ;; 用 let* ：CLIP-COEFF 的初值依赖上面的 CLIP
   (let* ((lr (optimizer-lr opt))
         (alpha (rmsprop-alpha opt))
         (eps (rmsprop-eps opt))
@@ -294,7 +287,6 @@
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
           when (and param grad (layer-trainable-p owner))
             do (let* ((base-key (list owner name))
                       (key-v (list base-key 'v))
@@ -380,7 +372,6 @@
           for name = (second p)
           for param = (third p)
           for setter = (fourth p)
-          ;; P1-1: trainable=nil 的层不参与更新（此前该标志被完全忽略）
           when (and param grad (layer-trainable-p owner))
             do (let* ((base-key (list owner name))
                       (key-v (list base-key 'v))

@@ -204,7 +204,7 @@
 (defmethod forward ((l multi-head-attention) inputs)
   (ensure-mha-params l)
   (destructuring-bind (query key value) inputs
-    ;; P2-7: 提前校验秩，避免下游 reshape 抛出「元素总数不一致」这类难定位的错误。
+    ;; 提前校验秩，避免下游 reshape 抛出「元素总数不一致」这类难定位的错误。
     (dolist (pair (list (cons "query" query) (cons "key" key) (cons "value" value)))
       (unless (>= (length (vt-shape (cdr pair))) 3)
         (error "multi-head-attention: ~a 至少需要 3 维 (batch, seq, dim)，实际为 ~a"
