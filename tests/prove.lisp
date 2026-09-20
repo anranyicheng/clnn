@@ -690,6 +690,8 @@
   (handler-case (test-serialization) (error (e) (format t "  [ERROR] ~a~%" e)))
   (format t "~%=== 套件运行完毕 ===~%"))
 
+(run-clnn-test-suite)
+
 #|
 NN> (run-clnn-test-suite)
 
