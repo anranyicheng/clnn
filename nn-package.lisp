@@ -13,7 +13,7 @@
        :vt-transpose :vt-reshape :vt-squeeze :vt-split
        :vt-copy :vt-contiguous :vt-contiguous-p
        :vt-ref :vt-slice :vt-do-each :vt-map :vt-reduce
-       :vt-amax :vt-item
+       :vt-amax :vt-item :vt-size :vt-strides
        :vt-+ :vt-- :vt-* :vt-/ :vt-scale :vt-=
        :vt-matmul :vt-einsum :vt-dot :vt-outer
        :vt-sum :vt-mean :vt-std :vt-var
@@ -32,7 +32,7 @@
        :vt-inv :vt-det :vt-solve :vt-trace
        :vt-take :vt-eye
        :vt-copy-into :vt-flatten
-   :vt-pad :vt-repeat :vt-tile :vt-put
+       :vt-pad :vt-repeat :vt-tile :vt-put
        :vt-random-uniform
        )
   (:export
@@ -181,7 +181,7 @@
    :tb-embed-dim :tb-num-heads :tb-ffn-dim
    :seq-layers :seq-layer-names
    ;; 深拷贝
-   :copy-network
+   :copy-network :copy-layer-name
    ;; 其它
    :neural-network-compat :stop-gradient-node :vt-stop-gradient
    :sdpa-dropout-rate

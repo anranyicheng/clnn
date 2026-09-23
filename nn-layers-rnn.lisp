@@ -348,7 +348,9 @@
           (vt-+ (or (lstm-dbias-hh l)
                     (vt-zeros (vt-shape dbhh-acc)))
                 dbhh-acc))
-    grad-input))
+    (values grad-input
+            (when (lstm-h-0 l) dh-next)
+            (when (lstm-c-0 l) dc-next))))
 
 (defmethod params ((l lstm))
   (list (list l "weight_ih" (lstm-weight-ih l)

@@ -269,20 +269,35 @@ GRAD-LIST = ((name . tensor) ...)"))
               for tensor = (third p)
               sum (if tensor (vt-item (vt-sum (vt-square tensor))) 0.0d0)))))
 
-(defclass stop-gradient-node ()
-  ((input :initarg :input :reader sg-input))
+(defclass stop-gradient-node (layer)
+  ()
   (:documentation
-   "阻断梯度回流的包装器节点。前向传播直通，反向传播返回 NIL。"))
+   "阻断梯度回流的层：前向直通（返回 input），反向返回 NIL。
+   用法（推荐放入 sequential，让 forward/backward 自动串接）：
+     (seq-add! model (make-stop-gradient))
+   也可独立使用：
+     (forward (make-stop-gradient) x)   ; => x
+     (backward (make-stop-gradient) g)  ; => nil"))
 
-(defun vt-stop-gradient (tensor)
-  "对外暴露的 API：把一个张量包裹成断梯度节点。"
-  (make-instance 'stop-gradient-node :input tensor))
+(defun make-stop-gradient (&key (name "stop-gradient") (trainable nil))
+  (make-instance 'stop-gradient-node
+                 :name name :trainable trainable))
+
+(defun vt-stop-gradient (&optional tensor)
+  "向后兼容入口：返回一个 STOP-GRADIENT-NODE 层。
+   TENSOR 参数被保留仅为兼容旧调用，不再绑定到节点。"
+  (declare (ignore tensor))
+  (make-stop-gradient))
 
 (defmethod forward ((node stop-gradient-node) input)
-  (declare (ignore input))
-  (sg-input node))
+  input)
 
 (defmethod backward ((node stop-gradient-node) grad)
-  "拦截传进来的梯度 grad，直接丢弃，不向 input 传递任何东西。"
-  (declare (ignore grad))
-  nil)
+  "阻断梯度：返回与 GRAD 同形状的全零张量。
+   这样 SEQUENTIAL 等通用容器可以把零梯度继续传给上游层，
+   而不会因 NIL 崩溃。数学上等价于『截断』：上游拿到的梯度是零，
+   参数不会被这一步更新。"
+  (if grad
+      (vt-zeros (vt-shape grad))
+      nil))
+

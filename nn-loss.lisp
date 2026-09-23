@@ -189,12 +189,14 @@ softmax = exp-s / sum-exp（无 eps），梯度每行和精确为 0，与 PyTorc
 		 :eps (or eps 1.0d-7) :name name))
 
 (defmethod compute-loss ((l kl-divergence-loss) predicted target)
+  "KL(P||Q). PREDICTED 是 log Q（对数概率），TARGET 是 P（概率）。
+   与 PyTorch KLDivLoss 语义一致：kl = P * (log P - log Q)。
+   不做 exp(predicted) + clip —— predicted 本身就是 log Q，
+   额外 exp/clip 会改变 KL 的定义（且 clip 上界会把梯度压成 0）。"
   (let* ((eps (kl-eps l))
-         (q (vt-clip (vt-exp predicted) eps (- 1.0d0 eps)))
-         (kl (vt-- (vt-* target
-                         (vt-log (vt-clip target eps
-                                          (- 1.0d0 eps))))
-                   (vt-* target (vt-log q)))))
+         (p-clipped (vt-clip target eps (- 1.0d0 eps)))
+         (kl (vt-- (vt-* target (vt-log p-clipped))
+                   (vt-* target predicted))))
     (ecase (loss-reduction l)
       (:mean (vt-mean (vt-sum-axis kl -1)))
       (:sum (vt-sum (vt-sum-axis kl -1)))
