@@ -1,5 +1,7 @@
 ;;;; mnist-clnn.lisp
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (ql:quickload '(:clnn :chipz)))
 (in-package :clnn)
 
 ;;; ============================================================
@@ -528,3 +530,247 @@
     (initial-data))
   (train-mnist-cnn-small :epochs epochs :batch-size batch-size
                          :lr lr :n-train n-train))
+
+
+
+
+;;;; demo-A4-B4-cnn-bn-gap.lisp
+;;;; 任务：MNIST 分类
+;;;; 模型：
+;;;;   Conv(1→8, 3x3, p=1) → BatchNorm(8) → ReLU → MaxPool(2)
+;;;;   Conv(8→16, 3x3, p=1) → BatchNorm(16) → ReLU → MaxPool(2)
+;;;;   GlobalAvgPool2d → Dense(16→10)
+;;;;
+;;;; 验证：BatchNorm 在 Conv 之后的真实训练、GlobalAvgPool2d 的 forward + backward
+(in-package :nn)
+
+;;; ---- 标签缓存 ----
+(defvar *mnist-train-labels* nil)
+(defvar *mnist-test-labels* nil)
+
+(defun one-hot-to-labels (one-hot)
+  (let* ((n (first (vt-shape one-hot)))
+         (c (second (vt-shape one-hot)))
+         (data (vt-data one-hot))
+         (off (vt-offset one-hot))
+         (rs (first (vt-strides one-hot)))
+         (cs (second (vt-strides one-hot)))
+         (labels (make-array n :element-type 'fixnum)))
+    (dotimes (i n)
+      (let ((best 0) (val most-negative-double-float)
+            (base (+ off (* i rs))))
+        (dotimes (k c)
+          (let ((v (aref data (+ base (* k cs)))))
+            (when (> v val) (setf val v best k))))
+        (setf (aref labels i) best)))
+    labels))
+
+(defun ensure-mnist-labels ()
+  (unless *mnist-train-labels*
+    (format t "转换 one-hot 标签（一次性）...~%")
+    (setf *mnist-train-labels* (one-hot-to-labels *trainl*))
+    (setf *mnist-test-labels*  (one-hot-to-labels *testl*))))
+
+(defun slice-labels (labels-array start end)
+  (vt-from-sequence
+   (loop for i from start below end collect (aref labels-array i))
+   :dtype :int64))
+
+;;; ---- 数据切片 ----
+(defun slice-images-4d (x start end bs)
+  (vt-reshape (vt-slice x (list start end) (list :all))
+              (list bs 1 28 28)))
+
+;;; ---- 准确率 ----
+(defun batch-acc (pred labels-array start)
+  (let* ((batch (first (vt-shape pred)))
+         (n-classes (second (vt-shape pred)))
+         (data (vt-data pred)) (off (vt-offset pred))
+         (rs (first (vt-strides pred))) (cs (second (vt-strides pred)))
+         (correct 0))
+    (dotimes (i batch)
+      (let ((best 0) (val most-negative-double-float)
+            (base (+ off (* i rs))))
+        (dotimes (c n-classes)
+          (let ((v (aref data (+ base (* c cs)))))
+            (when (> v val) (setf val v best c))))
+        (when (= best (aref labels-array (+ start i)))
+          (incf correct))))
+    correct))
+
+;;;; demo-cnn-tail-compare.lisp
+;;;; 对比 CNN 的两种尾部设计：
+;;;;   A) Flatten → Dense(10)            （保留空间信息）
+;;;;   B) GlobalAvgPool2d → Dense(10)    （压缩空间信息）
+;;;; 用同一个训练/评估循环，打印并排对比。
+
+;;; ============================================================
+;;; 1. 两个模型构造器（不覆盖对方）
+;;; ============================================================
+(defun make-cnn-bn-flatten ()
+  "Conv(1→8) → BN(8) → ReLU → Pool → Conv(8→16) → BN(16) → ReLU → Pool → Flatten → Dense(10)"
+  (let ((m (make-sequential)))
+    (seq-add! m (make-conv2d 8 '(3 3) :in-channels 1
+                              :stride '(1 1) :padding '(1 1)))
+    (seq-add! m (make-batch-norm 8))
+    (seq-add! m (make-activation-layer :relu))
+    (seq-add! m (make-max-pool2d 2))
+    (seq-add! m (make-conv2d 16 '(3 3) :in-channels 8
+                              :stride '(1 1) :padding '(1 1)))
+    (seq-add! m (make-batch-norm 16))
+    (seq-add! m (make-activation-layer :relu))
+    (seq-add! m (make-max-pool2d 2))
+    (seq-add! m (make-flatten))
+    (seq-add! m (make-dense 10 :activation :none))
+    m))
+
+(defun make-cnn-bn-gap ()
+  "Conv(1→8) → BN(8) → ReLU → Pool → Conv(8→16) → BN(16) → ReLU → Pool → GlobalAvgPool2d → Dense(10)"
+  (let ((m (make-sequential)))
+    (seq-add! m (make-conv2d 8 '(3 3) :in-channels 1
+                              :stride '(1 1) :padding '(1 1)))
+    (seq-add! m (make-batch-norm 8))
+    (seq-add! m (make-activation-layer :relu))
+    (seq-add! m (make-max-pool2d 2))
+    (seq-add! m (make-conv2d 16 '(3 3) :in-channels 8
+                              :stride '(1 1) :padding '(1 1)))
+    (seq-add! m (make-batch-norm 16))
+    (seq-add! m (make-activation-layer :relu))
+    (seq-add! m (make-max-pool2d 2))
+    (seq-add! m (make-global-avg-pool2d))
+    (seq-add! m (make-dense 10 :activation :none))
+    m))
+
+;;; ============================================================
+;;; 2. 从模型动态生成结构描述（不硬编码）
+;;; ============================================================
+(defun describe-layer (l)
+  (typecase l
+    (conv2d (format nil "Conv(~a→~a, ~ax~a)"
+                    (conv-in-channels l)
+                    (conv-out-channels l)
+                    (first (conv-kernel-size l))
+                    (second (conv-kernel-size l))))
+    (batch-norm (format nil "BN(~a)" (bn-num-features l)))
+    (activation-layer (format nil "~a" (string-upcase (symbol-name (activation-kind l)))))
+    (max-pool2d (format nil "MaxPool(~a)" (first (pool-kernel-size l))))
+    (global-avg-pool2d "GlobalAvgPool2d")
+    (flatten "Flatten")
+    (dense (format nil "Dense(~a→~a)"
+                   (or (dense-in-dim l) '?)
+                   (dense-out-dim l)))
+    (t (format nil "~a" (class-name (class-of l))))))
+
+(defun describe-model (model)
+  (let ((parts (mapcar #'describe-layer (seq-layers model))))
+    (format nil "~{~a~^ → ~}" parts)))
+
+;;; ============================================================
+;;; 3. 通用训练 + 评估
+;;; ============================================================
+(defun train-and-eval (model &key (n-train 20000) (epochs 3)
+                                  (batch-size 64) (lr 1e-3)
+                                  (label "model"))
+  "训练 MODEL，返回 (values model train-history test-acc total-time)。"
+  (let* ((loss-fn (make-ce-loss :reduction :mean))
+         (opt (make-adam :lr lr))
+         (n-batches (floor n-train batch-size))
+         (train-accs '())
+         (t-total (get-internal-real-time)))
+    ;; ---- 训练 ----
+    (dotimes (epoch epochs)
+      (let ((epoch-loss 0.0d0) (epoch-correct 0)
+            (t-epoch (get-internal-real-time)))
+        (dotimes (b n-batches)
+          (let* ((start (* b batch-size))
+                 (end (+ start batch-size))
+                 (x (slice-images-4d *traina* start end batch-size))
+                 (y (slice-labels *mnist-train-labels* start end)))
+            (zero-grad! model)
+            (let* ((pred (forward model x))
+                   (loss (compute-loss loss-fn pred y))
+                   (grad (compute-loss-gradient loss-fn pred y)))
+              (backward model grad)
+              (optimizer-step opt (params model) (grads model))
+              (incf epoch-loss (vt-item loss))
+              (incf epoch-correct (batch-acc pred *mnist-train-labels* start)))))
+        (let ((acc (/ epoch-correct n-train)))
+          (push acc train-accs)
+          (format t "  [~a] epoch ~a/~a  loss=~,4f  train-acc=~,4f  (~,1fs)~%"
+                  label (1+ epoch) epochs
+                  (/ epoch-loss n-batches) acc
+                  (/ (- (get-internal-real-time) t-epoch)
+                     (coerce internal-time-units-per-second 'double-float))))))
+    ;; ---- 测试（推理模式，用 running stats）----
+    (set-model-training! model nil)
+    (let ((correct 0) (total 0) (start 0))
+      (loop while (< start 10000) do
+        (let* ((end (min (+ start 500) 10000))
+               (bs (- end start))
+               (x (slice-images-4d *testa* start end bs))
+               (pred (forward model x)))
+          (incf correct (batch-acc pred *mnist-test-labels* start))
+          (incf total bs)
+          (setf start end)))
+      (let ((test-acc (/ correct total))
+            (total-time (/ (- (get-internal-real-time) t-total)
+                           (coerce internal-time-units-per-second 'double-float))))
+        (format t "  [~a] 测试准确率: ~,2f%  总耗时 ~,1fs~%"
+                label (* 100.0 test-acc) total-time)
+        (values model (nreverse train-accs) test-acc total-time)))))
+
+;;; ============================================================
+;;; 4. 并排对比
+;;; ============================================================
+(defun compare-cnn-tails (&key (n-train 20000) (epochs 3)
+                                (batch-size 64) (lr 1e-3))
+  (ensure-mnist-labels)
+  (format t "~%============================================================~%")
+  (format t "  CNN 尾部设计对比~%")
+  (format t "  样本: ~a  epoch: ~a  batch: ~a  lr: ~a~%"
+          n-train epochs batch-size lr)
+  (format t "============================================================~%")
+
+  (let* ((m-flatten (make-cnn-bn-flatten))
+         (m-gap     (make-cnn-bn-gap)))
+
+    (format t "~%--- 模型 A: Flatten 尾部 ---~%")
+    (format t "  ~a~%" (describe-model m-flatten))
+    (format t "~%--- 模型 B: GAP 尾部 ---~%")
+    (format t "  ~a~%" (describe-model m-gap))
+    (format t "~%")
+
+    (format t "~%--- 训练 A (Flatten) ---~%")
+    (multiple-value-bind (model-a accs-a test-a time-a)
+        (train-and-eval m-flatten :n-train n-train :epochs epochs
+                        :batch-size batch-size :lr lr :label "Flatten")
+
+      (format t "~%--- 训练 B (GAP) ---~%")
+      (multiple-value-bind (model-b accs-b test-b time-b)
+          (train-and-eval m-gap :n-train n-train :epochs epochs
+                          :batch-size batch-size :lr lr :label "GAP")
+
+        ;; ---- 汇总 ----
+        (format t "~%============================================================~%")
+        (format t "  汇总对比~%")
+        (format t "============================================================~%")
+        (format t "~24a  ~12a  ~12a~%" "指标" "Flatten" "GAP")
+        (format t "~24a  ~12a  ~12a~%" "---------" "---------" "---------")
+        (dotimes (i epochs)
+          (format t "~24a  ~11,4f%  ~11,4f%~%"
+                  (format nil "Epoch ~a train-acc" (1+ i))
+                  (* 100.0 (nth i accs-a))
+                  (* 100.0 (nth i accs-b))))
+        (format t "~24a  ~11,2f%  ~11,2f%~%" "测试准确率"
+                (* 100.0 test-a) (* 100.0 test-b))
+        (format t "~24a  ~10,1fs  ~10,1fs~%" "总耗时"
+                time-a time-b)
+        (format t "~24a  ~10a  ~10a~%" "训练参数量"
+                (param-count model-a) (param-count model-b))
+        (format t "~%胜者: ~a~%"
+                (cond ((> test-a test-b) "Flatten")
+                      ((> test-b test-a) "GAP")
+                      (t "平手")))
+        (values model-a model-b accs-a accs-b test-a test-b)))))
+
+(compare-cnn-tails :n-train 20000 :epochs 3 :batch-size 128 :lr 1e-3)
