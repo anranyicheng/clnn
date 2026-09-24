@@ -95,9 +95,10 @@
   (let ((s (clvt::vt-slice tensor (list start end) (list :all))))
     (if (clvt::vt-contiguous-p s) s (clvt::vt-contiguous s))))
 
-(defun mnist-images-4d (start end batch-size)
-  "从 *mnist-traina* 取 [START, END)，reshape 成 (BATCH, 1, 28, 28)。"
-  (clvt::vt-reshape (mnist-slice-batch *mnist-traina* start end)
+(defun mnist-images-4d (start end batch-size &key (data *mnist-traina*))
+  "从 DATA 取 [START, END)，reshape 成 (BATCH-SIZE, 1, 28, 28)。
+   DATA 默认 *mnist-traina*（训练用）；评估时传 *mnist-testa*。"
+  (clvt::vt-reshape (mnist-slice-batch data start end)
                     (list batch-size 1 28 28)))
 
 ;;; ============================================================
@@ -175,8 +176,9 @@
 	 (cs (second (clvt::vt-strides pred)))
          (correct 0))
     (dotimes (i batch)
-      (let ((best 0) (val most-negative-double-float)
-		     (base (+ off (* i rs))))
+      (let ((best 0)
+	    (val most-negative-double-float)
+	    (base (+ off (* i rs))))
         (dotimes (c n-classes)
           (let ((v (aref data (+ base (* c cs)))))
             (when (> v val) (setf val v best c))))
@@ -212,7 +214,7 @@
       (let* ((end (min (+ start batch-size) n))
              (bs (- end start))
              (x (if images-4d
-                    (mnist-images-4d start end bs)
+                    (mnist-images-4d start end bs :data *mnist-testa*)
                     (mnist-slice-batch *mnist-testa* start end)))
              (pred (forward model x)))
         (incf correct (mnist-accuracy-labels pred *mnist-test-labels* start))
@@ -332,7 +334,8 @@
                 (/ epoch-loss n-batches) (/ epoch-correct n-train)
                 (/ (- (get-internal-real-time) t-epoch)
                    (coerce internal-time-units-per-second 'double-float)))))
-    (multiple-value-bind (c tt a) (evaluate-mnist-vt model)
+    (multiple-value-bind (c tt a)
+      (evaluate-mnist-labels model :images-4d t)
       (format t "~%测试准确率: ~a / ~a = ~,2f%~%" c tt (* 100.0 a)))
     (format t "总耗时: ~,1f 秒~%"
             (/ (- (get-internal-real-time) t0)
@@ -392,7 +395,8 @@
                 (/ epoch-loss n-batches) (/ epoch-correct n-train)
                 (/ (- (get-internal-real-time) t-epoch)
                    (coerce internal-time-units-per-second 'double-float)))))
-    (multiple-value-bind (c tt a) (evaluate-mnist-labels model)
+    (multiple-value-bind (c tt a)
+      (evaluate-mnist-labels model :images-4d t)
       (format t "~%测试准确率: ~a / ~a = ~,2f%~%" c tt (* 100.0 a)))
     (format t "总耗时: ~,1f 秒~%"
             (/ (- (get-internal-real-time) t0)
@@ -484,6 +488,7 @@
     (set-model-training! model nil)
     (multiple-value-bind (c tt a)
 	(evaluate-mnist-labels model :images-4d t)
+      (declare (ignorable c tt))
       (let ((total-time (/ (- (get-internal-real-time) t-total)
                            (coerce internal-time-units-per-second 'double-float))))
         (format t "  [~a] 测试准确率: ~,2f%  总耗时 ~,1fs~%"
@@ -522,3 +527,4 @@
         (format t "~24a  ~10a  ~10a~%" "参数量"
                 (param-count model-a) (param-count model-b))
         (values model-a model-b accs-a accs-b test-a test-b)))))
+ 
