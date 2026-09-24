@@ -3,15 +3,17 @@
 (defun test-xor ()
   (format t "~%=== [例1] XOR 最小分类 ===~%")
   (let* ((x (vt-from-array
-             (make-array '(4 2) :element-type 'double-float
-				:initial-contents '((0.0d0 0.0d0)
-                                                    (0.0d0 1.0d0)
-                                                    (1.0d0 0.0d0)
-                                                    (1.0d0 1.0d0)))))
+             (make-array '(4 2)
+			 :element-type 'double-float
+			 :initial-contents '((0.0d0 0.0d0)
+                                             (0.0d0 1.0d0)
+                                             (1.0d0 0.0d0)
+                                             (1.0d0 1.0d0)))))
          (y (vt-reshape (vt-from-array
-                         (make-array '(4 1) :element-type 'double-float
-                                            :initial-contents '((0.0d0) (1.0d0)
-								(1.0d0) (0.0d0))))
+                         (make-array '(4 1)
+				     :element-type 'double-float
+                                     :initial-contents '((0.0d0) (1.0d0)
+							 (1.0d0) (0.0d0))))
                         '(4 1)))
          (m (make-sequential :name "xor"))
          (opt (make-adam :lr 0.01d0))
@@ -29,10 +31,13 @@
         (when (zerop (mod epoch 500))
           (format t "  epoch ~4d: loss = ~,6F~%" epoch (vt-item loss)))))
     (let* ((pred (forward m x))
-           (pred-class (vt-map (lambda (v) (if (> v 0.5d0) 1.0d0 0.0d0)) pred))
+           (pred-class (vt-map (lambda (v)
+				 (if (> v 0.5d0) 1.0d0 0.0d0))
+			       pred))
            (acc (vt-item
                  (vt-mean
-                  (vt-map (lambda (a b) (if (< (abs (- a b)) 1e-6) 1.0d0 0.0d0))
+                  (vt-map (lambda (a b)
+			    (if (< (abs (- a b)) 1e-6) 1.0d0 0.0d0))
                           pred-class y)))))
       (format t "  最终准确率: ~a~%" acc)
       (if (> acc 0.999d0)
@@ -59,7 +64,8 @@
 
 (defun test-spiral ()
   (format t "~%=== [例2] 三分类螺旋数据 ===~%")
-  (multiple-value-bind (x y) (make-spiral-data 100 3)
+  (multiple-value-bind (x y)
+      (make-spiral-data 100 3)
     (let* ((m (make-sequential :name "spiral"))
            (opt (make-adam :lr 0.005d0))
            (loss-fn (make-ce-loss)))
@@ -132,8 +138,8 @@
              (rel (/ (abs (- av bv)) denom)))
         (when (> rel max-err) (setf max-err rel))))))
 
-(defun check-layer-gradient-squared-loss (name layer x0
-                                          &key (tol 1.0d-4) (eps 1.0d-5))
+(defun check-layer-gradient-squared-loss
+    (name layer x0 &key (tol 1.0d-4) (eps 1.0d-5))
   "对 L(x) = sum(forward(layer, x)²) 做梯度检查。
    LAYER 是一个已构造的层对象；X0 是输入张量。
    EPS 是中心差分步长。
@@ -166,7 +172,8 @@
   (let* ((d (make-dense 3 :in-dim 4 :activation :tanh))
          (x0 (vt-from-array
               (make-array '(1 4) :element-type 'double-float
-                                 :initial-contents '((0.5d0 -0.3d0 0.8d0 0.1d0))))))
+                                 :initial-contents
+				 '((0.5d0 -0.3d0 0.8d0 0.1d0))))))
     (check-layer-gradient-squared-loss "Dense(tanh)" d x0)))
 
 (defun test-gradient-layernorm ()
@@ -175,7 +182,8 @@
   (let* ((ln (make-layer-norm '(4) :affine t))
          (x0 (vt-from-array
               (make-array '(1 4) :element-type 'double-float
-                                 :initial-contents '((0.5d0 -0.3d0 0.8d0 0.1d0))))))
+                                 :initial-contents
+				 '((0.5d0 -0.3d0 0.8d0 0.1d0))))))
     (check-layer-gradient-squared-loss "LayerNorm" ln x0)))
 
 
@@ -185,14 +193,16 @@
   (let* ((d (make-dense 3 :in-dim 4 :activation :tanh))
          (x0 (vt-from-array
               (make-array '(1 4) :element-type 'double-float
-                                 :initial-contents '((0.5d0 -0.3d0 0.8d0 0.1d0))))))
+                                 :initial-contents
+				 '((0.5d0 -0.3d0 0.8d0 0.1d0))))))
     ;; 先把权重固定
     (forward d x0)
     ;; 数值梯度：对 x 每个分量做中心差分
     (let* ((eps 1e-5)
            (num-grad (make-array 4 :element-type 'double-float)))
       (dotimes (i 4)
-        (let ((xp (vt-copy x0)) (xm (vt-copy x0)))
+        (let ((xp (vt-copy x0))
+	      (xm (vt-copy x0)))
           (setf (row-major-aref (vt-data xp) i)
                 (+ (row-major-aref (vt-data x0) i) eps))
           (setf (row-major-aref (vt-data xm) i)
@@ -224,12 +234,14 @@
   (let* ((ln (make-layer-norm '(4) :affine t))
          (x0 (vt-from-array
               (make-array '(1 4) :element-type 'double-float
-                                 :initial-contents '((0.5d0 -0.3d0 0.8d0 0.1d0)))))
+                                 :initial-contents
+				 '((0.5d0 -0.3d0 0.8d0 0.1d0)))))
          (eps 1e-5)
          (num-grad (make-array 4 :element-type 'double-float)))
     (forward ln x0)                          ; 初始化 gamma/beta
     (dotimes (i 4)
-      (let ((xp (vt-copy x0)) (xm (vt-copy x0)))
+      (let ((xp (vt-copy x0))
+	    (xm (vt-copy x0)))
         (setf (row-major-aref (vt-data xp) i)
               (+ (row-major-aref (vt-data x0) i) eps))
         (setf (row-major-aref (vt-data xm) i)
@@ -449,8 +461,9 @@
       (dotimes (epoch 500)
         ;; -------- 前向 --------
         (let* ((seq-out (forward seq-layer x))                    ; (200, 8, 16)
-               (last-t  (vt-slice seq-out
-                                  (list :all) (list (1- seq-len)) (list :all))) ; (200, 16)
+               (last-t  (vt-slice
+			 seq-out
+                         (list :all) (list (1- seq-len)) (list :all))) ; (200, 16)
                (logits  (forward head last-t))                    ; (200, 2)
                (g-logits (compute-loss-gradient loss-fn logits y))); (200, 2)
 
@@ -469,7 +482,8 @@
 
         (when (zerop (mod epoch 100))
           (let* ((seq-out (forward seq-layer x))
-                 (last-t (vt-slice seq-out (list :all) (list (1- seq-len)) (list :all)))
+                 (last-t (vt-slice
+			  seq-out (list :all) (list (1- seq-len)) (list :all)))
                  (logits (forward head last-t))
                  (loss (compute-loss loss-fn logits y))
                  (pred (vt-argmax logits :axis 1))
@@ -484,7 +498,8 @@
 
       ;; -------- 最终评估 --------
       (let* ((seq-out (forward seq-layer x))
-             (last-t (vt-slice seq-out (list :all) (list (1- seq-len)) (list :all)))
+             (last-t (vt-slice
+		      seq-out (list :all) (list (1- seq-len)) (list :all)))
              (logits (forward head last-t))
              (pred (vt-argmax logits :axis 1))
              (acc (vt-item
@@ -516,7 +531,8 @@
                (loss (vt-mean (vt-square diff)))
                (n (* batch seq-len embed-dim))
                (grad (vt-scale diff (/ 2.0d0 n))))
-          (when (null initial-loss) (setf initial-loss (vt-item loss)))
+          (when (null initial-loss)
+	    (setf initial-loss (vt-item loss)))
           (backward tb grad)
           (model-update! tb opt)
           (when (zerop (mod epoch 20))
