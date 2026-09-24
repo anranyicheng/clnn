@@ -1,11 +1,8 @@
-;;;; mnist-common.lisp
-;;;; MNIST 数据加载 + 共享工具。所有 demo 都依赖此文件。
-;;;; 加载顺序：先加载本文件，再加载 mnist-demos.lisp。
+;;;; mnist-common
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (ql:quickload '(:clnn :chipz)))
 (in-package :clnn)
-(in-package :nn)
 
 ;;; ============================================================
 ;;; 全局数据
@@ -212,19 +209,11 @@
 
 
 
-
-
-
-
-
-
-;;;; mnist-demos.lisp
-;;;; 4 个 MNIST demo。依赖 mnist-common.lisp 已加载。
-(in-package :nn)
-
+;;;; 4 个 MNIST demo。
 ;;; ============================================================
 ;;; DEMO 1: Dense 网络 (MSE)
 ;;; ============================================================
+
 (defun make-dense-mnist (&key (hidden1 256) (hidden2 128))
   (let ((m (make-sequential)))
     (seq-add! m (make-dense hidden1 :in-dim 784 :activation :relu))
@@ -355,7 +344,7 @@
     m))
 
 (defun train-cnn-mnist-small (&key (epochs 5) (batch-size 128) (lr 1e-3)
-                                     (n-train 60000) (log-every 100))
+                                     (n-train 60000))
   (ensure-mnist-data)
   (ensure-mnist-labels)
   (let* ((model (make-cnn-mnist-small))
