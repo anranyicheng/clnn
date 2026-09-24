@@ -207,3 +207,130 @@
     model))
 
 (train-reinforce)
+
+;;;; cartpole-a2c.lisp
+;;;; CartPole + A2C (Advantage Actor-Critic)
+;;;;
+;;;; 相比 REINFORCE 的改进：
+;;;;   1. 加一个 critic 网络估计 V(s)
+;;;;   2. 策略梯度用 advantage A_t = G_t - V(s_t) 加权，而非原始 G_t
+;;;;   3. advantage 当作常数处理（等价于 stop-gradient）
+;;;;   4. 方差降低 3-5 倍，收敛更稳
+;;;;
+;;;; 前置：cartpole-reinforce-v3.lisp 已加载（复用环境 + 工具函数）
+;;;; 用法：
+;;;;   (in-package :nn)
+;;;;   (load "cartpole-a2c.lisp")
+;;;;   (train-a2c :episodes 500 :actor-lr 1e-3 :critic-lr 5e-3 :hidden 32)
+
+(in-package :nn)
+
+;;; ============================================================
+;;; 模型构造器：两个独立网络（避免分叉复杂度）
+;;; ============================================================
+(defun make-actor (hidden)
+  "策略网络：Dense(4→hidden) → ReLU → Dense(hidden→2)"
+  (let ((m (make-sequential)))
+    (seq-add! m (make-dense hidden :in-dim 4 :activation :relu))
+    (seq-add! m (make-dense 2 :activation :none))
+    m))
+
+(defun make-critic (hidden)
+  "价值网络：Dense(4→hidden) → ReLU → Dense(hidden→1)"
+  (let ((m (make-sequential)))
+    (seq-add! m (make-dense hidden :in-dim 4 :activation :relu))
+    (seq-add! m (make-dense 1 :activation :none))
+    m))
+
+;;; ============================================================
+;;; 单次 A2C 更新
+;;; ============================================================
+(defun train-one-episode-a2c (actor critic actor-opt critic-opt
+                              states actions rewards gamma)
+  "对一条轨迹做一次 A2C 更新，返回 episode 总回报。
+   actor 梯度：dL/dlogits = (softmax - one_hot) * A_t
+     A_t = G_norm_t - V(s_t)，当作常数（stop-gradient）
+   critic 梯度：dMSE/dV = 2*(V - G_norm) / N"
+  (let* ((n-steps (length rewards))
+         ;; ---- 折扣回报 + 标准化 ----
+         (returns (compute-discounted-returns rewards gamma))
+         (returns-norm (standardize returns))
+         ;; ---- 状态打包成 (T, 4) ----
+         (states-batch (apply #'vt-concatenate 0 states))
+         ;; ---- 一次 forward 两个网络 ----
+         (logits (forward actor states-batch))     ; (T, 2)
+         (values (forward critic states-batch))    ; (T, 1)
+         ;; ---- 目标张量 (T, 1) ----
+         (targets (vt-reshape
+                   (vt-from-sequence returns-norm :dtype :float64)
+                   (list n-steps 1)))
+         ;; ---- Advantage = G - V （注意：此处 values 当作常数） ----
+         (advantages (vt-- targets values))
+         ;; ---- one-hot (T, 2) ----
+         (one-hot-arr (make-array (* n-steps 2)
+                                  :element-type 'double-float
+                                  :initial-element 0.0d0)))
+    (dotimes (idx n-steps)
+      (setf (aref one-hot-arr (+ (* idx 2) (nth idx actions))) 1.0d0))
+    (let* ((one-hot (vt-reshape
+                     (vt-from-sequence (coerce one-hot-arr 'list)
+                                       :dtype :float64)
+                     (list n-steps 2)))
+           (probs (vt-softmax logits))
+           ;; ---- actor 梯度： (probs - one_hot) * A_t ----
+           (policy-grad (vt-- probs one-hot))
+           (weighted-policy (vt-* policy-grad advantages))
+           ;; ---- critic 梯度： 2*(V - G)/N ----
+           (value-grad (vt-scale (vt-- values targets)
+                                 (/ 2.0d0 n-steps))))
+      ;; ---- 更新 actor ----
+      (zero-grad! actor)
+      (backward actor weighted-policy)
+      (optimizer-step actor-opt (params actor) (grads actor))
+      ;; ---- 更新 critic ----
+      (zero-grad! critic)
+      (backward critic value-grad)
+      (optimizer-step critic-opt (params critic) (grads critic)))
+    (reduce #'+ rewards)))
+
+;;; ============================================================
+;;; 主训练
+;;; ============================================================
+(defun train-a2c (&key (episodes 500) (actor-lr 1e-3) (critic-lr 5e-3)
+                    (gamma 0.99) (hidden 32))
+  (format t "~%=== CartPole + A2C ===~%")
+  (format t "actor:  Dense(4→~a) → ReLU → Dense(~a→2)~%" hidden hidden)
+  (format t "critic: Dense(4→~a) → ReLU → Dense(~a→1)~%" hidden hidden)
+  (format t "episodes=~a  actor-lr=~a  critic-lr=~a  gamma=~a~%~%"
+          episodes actor-lr critic-lr gamma)
+
+  (let* ((actor (make-actor hidden))
+         (critic (make-critic hidden))
+         (actor-opt (make-adam :lr actor-lr))
+         (critic-opt (make-adam :lr critic-lr))
+         (recent-returns '()))
+    ;; 触发权重初始化
+    (forward actor (vt-random-normal '(1 4)))
+    (forward critic (vt-random-normal '(1 4)))
+
+    (dotimes (ep episodes)
+      (multiple-value-bind (states actions rewards) (run-episode actor)
+        (let ((total (train-one-episode-a2c actor critic actor-opt critic-opt
+                                            states actions rewards gamma)))
+          (push total recent-returns)
+          (when (zerop (mod (1+ ep) 50))
+            (let* ((n (min 100 (length recent-returns)))
+                   (avg (/ (reduce #'+ (subseq recent-returns 0 n)) n)))
+              (format t "Episode ~3a  return=~a  avg-last-~a=~,1f~%"
+                      (1+ ep) (round total) n avg))))))
+
+    (format t "~%测试 20 回合（贪心策略）...~%")
+    (let ((test-returns '()))
+      (dotimes (i 20)
+        (multiple-value-bind (s a rewards) (run-episode actor :greedy t)
+          (declare (ignore s a))
+          (push (reduce #'+ rewards) test-returns)))
+      (format t "平均回报: ~,1f~%" (/ (reduce #'+ test-returns) 20.0)))
+    actor))
+
+;; (train-a2c :episodes 500 :actor-lr 1e-3 :critic-lr 5e-3 :hidden 32)
