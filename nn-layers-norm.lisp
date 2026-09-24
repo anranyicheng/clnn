@@ -124,7 +124,8 @@
       (setf (nth (nth i perm) inv) i))))
 
 (defmethod forward ((l batch-norm) input)
-  (let* ((nf (bn-num-features l))
+  (let* ((input (if (vt-contiguous-p input) input (vt-contiguous input)))
+         (nf (bn-num-features l))
          (eps (bn-eps l))
          (shape (vt-shape input))
          (rank (length shape)))
@@ -148,18 +149,15 @@
                 (setf (bn-xhat-cache l) xhat)
                 (setf (bn-std-inv-cache l) std-inv)
 		(let ((m (bn-momentum l)))
-		  ;; running-mean 始终更新
 		  (setf (bn-running-mean l)
 			(vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m))
 			      (vt-scale (vt-reshape mean-r (list nf)) m)))
-		  ;; running-var 仅在 batch>1 时更新（与 PyTorch 一致）
 		  (when (> batch 1)
 		    (let ((bessel (/ (coerce batch 'double-float)
 				     (coerce (1- batch) 'double-float))))
 		      (setf (bn-running-var l)
 			    (vt-+ (vt-scale (bn-running-var l) (- 1.0d0 m))
 				  (vt-scale (vt-scale (vt-reshape var-r (list nf)) bessel) m))))))
-		
                 (if (bn-affine-p l) (vt-+ (vt-* (bn-gamma l) xhat) (bn-beta l)) xhat))
               (let* ((rm (vt-reshape (bn-running-mean l) (list 1 nf)))
                      (rv (vt-reshape (bn-running-var l) (list 1 nf)))
@@ -172,7 +170,8 @@
                (trans (vt-transpose input perm))
                (tshape (vt-shape trans))
                (spatial (reduce #'* (butlast tshape)))
-               (two-d (vt-reshape trans (list spatial nf))))
+               (two-d (vt-contiguous
+                       (vt-reshape trans (list spatial nf)))))
           (setf (bn-batch-size l) spatial)
           (setf (bn-input-cache l) (list input inv-perm tshape))
           (if (training-p l)
@@ -191,7 +190,6 @@
 		  (setf (bn-running-mean l)
 			(vt-+ (vt-scale (bn-running-mean l) (- 1.0d0 m))
 			      (vt-scale mean-v m)))
-		  ;; spatial 是 (N*H*W)，N=1 且 H*W=1 时跳过 running-var 更新
 		  (when (> spatial 1)
 		    (let ((bessel (/ (coerce spatial 'double-float)
 				     (coerce (1- spatial) 'double-float))))
