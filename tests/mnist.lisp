@@ -189,7 +189,7 @@
 ;;; ============================================================
 ;;; 评估
 ;;; ============================================================
-(defun evaluate-mnist-vt (model &key (batch-size 500) (n 10000))
+(defun evaluate-mnist-vt (model &key (batch-size 128) (n 10000))
   "用 one-hot 标签评估。返回 (values correct total accuracy)。"
   (let ((correct 0) (total 0) (start 0))
     (loop while (< start n) do
@@ -200,10 +200,11 @@
              (pred (forward model x)))
         (incf correct (mnist-accuracy-vt pred y))
         (incf total bs)
-        (setf start end)))
+        (setf start end)
+	(clear-step-caches! model)))
     (values correct total (coerce (/ correct total) 'double-float))))
 
-(defun evaluate-mnist-labels (model &key (batch-size 500) (n 10000)
+(defun evaluate-mnist-labels (model &key (batch-size 128) (n 10000)
                                       (images-4d nil))
   "用 fixnum 标签评估。
    IMAGES-4D=T 时把输入 reshape 成 (batch, 1, 28, 28)——供 CNN 使用。

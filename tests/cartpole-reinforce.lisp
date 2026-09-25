@@ -873,7 +873,7 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
     q-net))
 
 
-
+;; (train-mountaincar-dqn )
 
 
 
@@ -1288,7 +1288,7 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
     q-net))
 
 
-
+;; (train-lunarlander-dqn)
 
 
 
@@ -1885,6 +1885,22 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
           (push total test-returns)))
       (format t "平均回报: ~,1f~%" (/ (reduce #'+ test-returns) 20.0)))
     (values policy-net value-net)))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 (defun train-ppo-v2 (&key (iterations 100) (lr 3e-4) (gamma 0.99) (lambda 0.95)
                             (hidden 64) (epochs-per-iter 10)
