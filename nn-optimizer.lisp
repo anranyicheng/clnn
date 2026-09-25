@@ -323,25 +323,12 @@
 		 ;; 计算分母
 		 (let* ((v-new (gethash key-v registry))
 			(denom
-                          ;; (if (rmsprop-centered-p opt)
-                          ;;     (let ((mg (gethash key-mg registry)))
-			  ;; 	(vt-+ (vt-map #'sqrt
-                          ;;                     (vt-- v-new
-                          ;;                           (vt-square mg)))
-                          ;;             eps))
-                          ;;     (vt-+ (vt-map #'sqrt v-new)
-                          ;;           eps))
 			  (if (rmsprop-centered-p opt)
 			      (let* ((mg (gethash key-mg registry))
-				     ;; 数学上 v_new - mg^2 >= 0，但浮点舍入在方差接近 0 时可能轻微为负，
-				     ;; sqrt 会产生 NaN 并污染整个 registry。PyTorch 同样做 max(0,·) 钳制。
 				     (var (vt-map (lambda (x) (max 0.0d0 x))
 						  (vt-- v-new (vt-square mg)))))
 				(vt-+ (vt-map #'sqrt var) eps))
-			      (vt-+ (vt-map #'sqrt v-new) eps))
-
-			  ))
-		   
+			      (vt-+ (vt-map #'sqrt v-new) eps))))		   
                    (if (> mom 0.0d0)
                        ;; 有动量
                        (let* ((buf (gethash key-buf registry
