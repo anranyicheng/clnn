@@ -73,8 +73,9 @@
                       (g-reg (if (> wd 0.0d0)
                                  (vt-+ g (vt-scale param wd))
                                  g))
-                      (buf (gethash base-key registry
-                                    (vt-zeros (vt-shape param))))
+                      (buf (or (gethash base-key registry)
+			       (setf (gethash base-key registry)
+                                     (vt-zeros (vt-shape param)))))
                       (new-buf (vt-+ (vt-scale buf mu) g-reg)))
                  (setf (gethash base-key registry) new-buf)
                  (let ((update (if (sgd-nesterov-p opt)
@@ -144,15 +145,17 @@
                       (bc1 (/ 1.0d0 (- 1.0d0 (expt b1 tt))))
                       (bc2 (/ 1.0d0 (- 1.0d0 (expt b2 tt)))))
 		 ;; 一阶矩
-		 (let ((m (gethash key-m registry
-                                   (vt-zeros (vt-shape param)))))
+		 (let ((m (or (gethash key-m registry)
+                              (setf (gethash key-m registry)
+				    (vt-zeros (vt-shape param))))))
                    (setf (gethash key-m registry)
 			 (vt-+ (vt-scale m b1)
                                (vt-scale g-reg
 					 (- 1.0d0 b1)))))
 		 ;; 二阶矩
-		 (let ((v (gethash key-v registry
-                                   (vt-zeros (vt-shape param)))))
+		 (let ((v (or (gethash key-v registry)
+                              (setf (gethash key-v registry)
+				    (vt-zeros (vt-shape param))))))
                    (setf (gethash key-v registry)
 			 (vt-+ (vt-scale v b2)
                                (vt-scale (vt-square g-reg)
@@ -165,8 +168,9 @@
 			(new-p
                           (if (adam-amsgrad-p opt)
 
-			      (let* ((v-max-old (gethash key-vmax registry
-							 (vt-zeros (vt-shape param))))
+			      (let* ((v-max-old (or (gethash key-vmax registry)
+						    (setf (gethash key-vmax registry)
+							  (vt-zeros (vt-shape param)))))
 				     (v-max (vt-map #'max v-max-old v-hat)))
 				(setf (gethash key-vmax registry) v-max)
 				(vt-- param
@@ -220,15 +224,17 @@
                       (bc1 (/ 1.0d0 (- 1.0d0 (expt b1 tt))))
                       (bc2 (/ 1.0d0 (- 1.0d0 (expt b2 tt)))))
 		 ;; 一阶矩 (无 wd)
-		 (let ((m (gethash key-m registry
-                                   (vt-zeros (vt-shape param)))))
+		 (let ((m (or (gethash key-m registry)
+                              (setf (gethash key-m registry)
+				    (vt-zeros (vt-shape param))))))
                    (setf (gethash key-m registry)
 			 (vt-+ (vt-scale m b1)
                                (vt-scale g
 					 (- 1.0d0 b1)))))
 		 ;; 二阶矩 (无 wd)
-		 (let ((v (gethash key-v registry
-                                   (vt-zeros (vt-shape param)))))
+		 (let ((v (or (gethash key-v registry)
+			      (setf (gethash key-v registry)
+                                    (vt-zeros (vt-shape param))))))
                    (setf (gethash key-v registry)
 			 (vt-+ (vt-scale v b2)
                                (vt-scale (vt-square g)
@@ -297,8 +303,9 @@
                                  (vt-+ g (vt-scale param wd))
                                  g))
                       (sq (vt-square g-reg))
-                      (v (gethash key-v registry
-                                  (vt-zeros (vt-shape param)))))
+                      (v (or (gethash key-v registry)
+                             (setf (gethash key-v registry)
+				   (vt-zeros (vt-shape param))))))
 		 ;; 更新平方梯度移动平均
 		 (setf (gethash key-v registry)
                        (vt-+ (vt-scale v alpha)
@@ -306,8 +313,9 @@
                                        (- 1.0d0 alpha))))
 		 ;; Centered 逻辑
 		 (when (rmsprop-centered-p opt)
-                   (let ((mg (gethash key-mg registry
-                                      (vt-zeros (vt-shape param)))))
+                   (let ((mg (or (gethash key-mg registry)
+				 (setf (gethash key-mg registry)
+                                       (vt-zeros (vt-shape param))))))
                      (setf (gethash key-mg registry)
                            (vt-+ (vt-scale mg alpha)
 				 (vt-scale g-reg
@@ -315,14 +323,25 @@
 		 ;; 计算分母
 		 (let* ((v-new (gethash key-v registry))
 			(denom
-                          (if (rmsprop-centered-p opt)
-                              (let ((mg (gethash key-mg registry)))
-				(vt-+ (vt-map #'sqrt
-                                              (vt-- v-new
-                                                    (vt-square mg)))
-                                      eps))
-                              (vt-+ (vt-map #'sqrt v-new)
-                                    eps))))
+                          ;; (if (rmsprop-centered-p opt)
+                          ;;     (let ((mg (gethash key-mg registry)))
+			  ;; 	(vt-+ (vt-map #'sqrt
+                          ;;                     (vt-- v-new
+                          ;;                           (vt-square mg)))
+                          ;;             eps))
+                          ;;     (vt-+ (vt-map #'sqrt v-new)
+                          ;;           eps))
+			  (if (rmsprop-centered-p opt)
+			      (let* ((mg (gethash key-mg registry))
+				     ;; 数学上 v_new - mg^2 >= 0，但浮点舍入在方差接近 0 时可能轻微为负，
+				     ;; sqrt 会产生 NaN 并污染整个 registry。PyTorch 同样做 max(0,·) 钳制。
+				     (var (vt-map (lambda (x) (max 0.0d0 x))
+						  (vt-- v-new (vt-square mg)))))
+				(vt-+ (vt-map #'sqrt var) eps))
+			      (vt-+ (vt-map #'sqrt v-new) eps))
+
+			  ))
+		   
                    (if (> mom 0.0d0)
                        ;; 有动量
                        (let* ((buf (gethash key-buf registry
@@ -383,8 +402,9 @@
                                        (* (adagrad-lr-decay opt)
 					  tt)))))
 		 ;; 累积平方梯度
-		 (let ((v (gethash key-v registry
-                                   (vt-zeros (vt-shape param)))))
+		 (let ((v (or (gethash key-v registry)
+                              (setf (gethash key-v registry)
+				    (vt-zeros (vt-shape param))))))
                    (setf (gethash key-v registry)
 			 (vt-+ v (vt-square g-reg))))
 		 ;; 更新参数

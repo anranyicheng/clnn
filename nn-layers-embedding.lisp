@@ -132,7 +132,7 @@
                 (+ (vt-ref dw idx-val j)
                    (* scale (coerce (vt-ref flat-go i j) 'double-float)))))))
     (setf (emb-dw l) dw)
-    nil))
+    (vt-zeros idx-shape)))
 
 (defmethod params ((l embedding))
   (when (emb-weight l)

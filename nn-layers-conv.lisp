@@ -370,18 +370,20 @@
                   (setf (aref out-data oi) (if (= max-ri -1) 0.0d0 max-val))
                   (setf (aref mask-data oi) max-ri))))))))
     (setf (pool-cache l) (list input mask-data))
-    (let ((out-vt (vt-from-sequence (coerce out-data 'list) :dtype :float64)))
+    (let ((out-vt (vt-from-array out-data :dtype :float64)))
       (vt-reshape out-vt (list batch channels oh ow)))))
 
+
 (defmethod backward ((l max-pool2d) grad-output)
-  (let* ((cached (pool-cache l))
+  (let* ((grad-output (if (vt-contiguous-p grad-output)
+                          grad-output
+                          (vt-contiguous grad-output)))
+	 (cached (pool-cache l))
          (input (first cached))
          (mask (second cached))
          (shape (vt-shape input))
          (batch (first shape))
 	 (channels (second shape))
-         (in-h (third shape))
-	 (in-w (fourth shape))
          (go-shape (vt-shape grad-output))
          (oh (third go-shape))
 	 (ow (fourth go-shape))
@@ -396,9 +398,8 @@
             (gv (aref go-data (+ go-off oi))))
         (when (>= ri 0)
           (incf (aref dx-data ri) gv))))
-    (let ((dx (vt-from-sequence (coerce dx-data 'list) :dtype :float64)))
+    (let ((dx (vt-from-array dx-data :dtype :float64)))
       (vt-reshape dx shape))))
-
 
 (defclass avg-pool2d (layer)
   ((kernel-size :initarg :kernel-size
@@ -481,8 +482,8 @@
 			(if (plusp cnt)
 			    (/ sum (coerce cnt 'double-float)) 0.0d0)))))))))
     (setf (apool-input-cache l) input)
-    (let ((out-vt (vt-from-sequence (coerce out-data 'list)
-				    :dtype :float64)))
+
+    (let ((out-vt (vt-from-array out-data :dtype :float64)))
       (vt-reshape out-vt (list batch channels oh ow)))))
 
 (defmethod backward ((l avg-pool2d) grad-output)
@@ -502,7 +503,6 @@
          (ph (first (apool-padding l)))
 	 (pw (second (apool-padding l)))
          (in-total (reduce #'* shape))
-         (out-total (* batch channels oh ow))
          (go-data (vt-data grad-output))
 	 (go-off  (vt-offset grad-output))
          (dx-data (make-array in-total :element-type 'double-float
@@ -543,7 +543,7 @@
 				   (<= 0 iw)
 				   (< iw in-w))
                           (incf (aref dx-data (lin-idx b c ih iw)) g))))))))))))
-    (let ((dx (vt-from-sequence (coerce dx-data 'list) :dtype :float64)))
+    (let ((dx (vt-from-array dx-data :dtype :float64)))
       (vt-reshape dx shape))))
 
 (defclass global-avg-pool2d (layer)

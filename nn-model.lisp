@@ -25,8 +25,6 @@
   (let ((layers (if (listp layer-or-layers)
                     layer-or-layers
                     (list layer-or-layers))))
-    ;; 用 append 而非 push+nreverse，避免 nreverse 破坏 cons 单元导致
-    ;; 多次 add! 后层顺序错乱（原始 bug）
     (setf (seq-layers model)
           (append (seq-layers model) layers))
     (dolist (l layers)
@@ -617,6 +615,11 @@
         :trainable (layer-trainable-p l)
         :dropout-rate (sdpa-dropout-rate l)))
 
+(defmethod layer->plist ((l stop-gradient-node))
+  (list :type 'stop-gradient-node
+        :name (layer-name l)
+        :trainable (layer-trainable-p l)))
+
 ;;; ---------- 兼容层 ----------
 
 (defmethod layer->plist ((l neural-network-compat))
@@ -833,7 +836,10 @@
        (make-scaled-dot-product-attention
         :dropout-rate (getf p :dropout-rate)
         :name name :trainable trainable))
-
+      
+      (stop-gradient-node
+       (make-stop-gradient :name name
+                           :trainable trainable))
       ;; ---------- 兼容层 ----------
       (neural-network-compat
        (let ((m (make-instance 'neural-network-compat

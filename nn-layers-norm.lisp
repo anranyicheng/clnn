@@ -28,25 +28,25 @@
 (defmethod forward ((l dropout) input)
   (if (training-p l)
       (let ((p (dropout-p l)))
-        (if (>= p 1.0d0)
-            ;; p=1.0 时直接返回全 0，避免 1/(1-1) 除零
-            (progn
-              (setf (dropout-mask-cache l)
-                    (vt-zeros (vt-shape input)))
-              (vt-zeros (vt-shape input)))
-            (let* ((scale
-                     (if (dropout-inverted-p l)
-                         (/ 1.0d0 (- 1.0d0 p))
-                         1.0d0))
-                   (mask
-                     (vt-map
-                      (lambda (x)
-                        (declare (ignore x))
-                        (if (< (random 1.0d0) p)
-                            0.0d0 scale))
-                      input)))
-              (setf (dropout-mask-cache l) mask)
-              (vt-* input mask))))
+        (cond
+          ((<= p 0.0d0)
+           ;; p=0 时不掷随机数、不建 mask、不做全量逐元素乘法。
+           (setf (dropout-mask-cache l) nil)
+           input)
+          ((>= p 1.0d0)
+           (setf (dropout-mask-cache l) (vt-zeros (vt-shape input)))
+           (vt-zeros (vt-shape input)))
+          (t
+           (let* ((scale (if (dropout-inverted-p l)
+                             (/ 1.0d0 (- 1.0d0 p))
+                             1.0d0))
+                  (mask (vt-map
+                         (lambda (x)
+                           (declare (ignore x))
+                           (if (< (random 1.0d0) p) 0.0d0 scale))
+                         input)))
+             (setf (dropout-mask-cache l) mask)
+             (vt-* input mask)))))
       input))
 
 (defmethod backward ((l dropout) grad-output)

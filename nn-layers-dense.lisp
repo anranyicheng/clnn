@@ -427,7 +427,6 @@
          (start (flatten-start-dim l))
          (pre (subseq shape 0 start))
          (post (subseq shape start))
-         (pre-dim (if pre (reduce #'* pre) 1))
          (post-dim (if post (reduce #'* post) 1)))
     (setf (flatten-cache l) shape)
     (vt-reshape
