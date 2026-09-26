@@ -26,14 +26,14 @@
                                      :initial-element 0.0d0)))
     (dotimes (i (* 28 28))
       (setf (aref image i) (/ (aref data (+ offset i)) 255.0d0)))
-    (clvt::vt-from-sequence image :dtype :float64)))
+    (clvt::vt-from-array image :dtype :float64 :fast t)))
 
 (defun mnist-read-and-normalize-label (data offset)
   (let ((target (make-array 10 :element-type 'double-float
                                :initial-element 0.0d0))
         (category (aref data offset)))
     (setf (aref target category) 1.0d0)
-    (clvt::vt-from-sequence target :dtype :float64)))
+    (clvt::vt-from-array target :dtype :float64 :fast t)))
 
 (defun mnist-load (type)
   (destructuring-bind (n-images images-path labels-path)
