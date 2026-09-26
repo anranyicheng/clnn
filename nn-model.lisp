@@ -238,7 +238,7 @@
                          'fixnum)))
         (setf (aref result-data i idx) 1.0d0)))
     (vt-reshape
-     (vt-from-array result-data)
+     (vt-from-array result-data :fast t)
      (list batch num-classes))))
 
 (defun tensor-masked-fill (x mask value)
@@ -1237,8 +1237,8 @@
                     (aref result-idxs (+ dst-start (* kk tail-size) ti))
                     (aref cand-idx kk)))))))
     (values
-     (vt-reshape (vt-from-sequence (coerce result-vals 'list)) out-shape)
-     (vt-reshape (vt-from-sequence (coerce result-idxs 'list) :dtype :int64)
+     (vt-reshape (vt-from-array result-vals :fast t) out-shape)
+     (vt-reshape (vt-from-array result-idxs :fast t :dtype :int64)
                  out-shape))))
 
 

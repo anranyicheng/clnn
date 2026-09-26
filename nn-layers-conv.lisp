@@ -370,7 +370,7 @@
                   (setf (aref out-data oi) (if (= max-ri -1) 0.0d0 max-val))
                   (setf (aref mask-data oi) max-ri))))))))
     (setf (pool-cache l) (list input mask-data))
-    (let ((out-vt (vt-from-array out-data :dtype :float64)))
+    (let ((out-vt (vt-from-array out-data :dtype :float64 :fast t)))
       (vt-reshape out-vt (list batch channels oh ow)))))
 
 
@@ -398,7 +398,7 @@
             (gv (aref go-data (+ go-off oi))))
         (when (>= ri 0)
           (incf (aref dx-data ri) gv))))
-    (let ((dx (vt-from-array dx-data :dtype :float64)))
+    (let ((dx (vt-from-array dx-data :dtype :float64 :fast t)))
       (vt-reshape dx shape))))
 
 (defclass avg-pool2d (layer)
@@ -483,7 +483,7 @@
 			    (/ sum (coerce cnt 'double-float)) 0.0d0)))))))))
     (setf (apool-input-cache l) input)
 
-    (let ((out-vt (vt-from-array out-data :dtype :float64)))
+    (let ((out-vt (vt-from-array out-data :dtype :float64 :fast t)))
       (vt-reshape out-vt (list batch channels oh ow)))))
 
 (defmethod backward ((l avg-pool2d) grad-output)
@@ -543,7 +543,7 @@
 				   (<= 0 iw)
 				   (< iw in-w))
                           (incf (aref dx-data (lin-idx b c ih iw)) g))))))))))))
-    (let ((dx (vt-from-array dx-data :dtype :float64)))
+    (let ((dx (vt-from-array dx-data :dtype :float64 :fast t)))
       (vt-reshape dx shape))))
 
 (defclass global-avg-pool2d (layer)

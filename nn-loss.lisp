@@ -1,16 +1,5 @@
 (in-package #:nn)
 
-(defun %ce-one-hot (indices n-classes)
-  "从整数索引直接构造 one-hot 矩阵，O(B*C) 分配，
-   避免 (vt-eye C) 带来的 O(C^2) 无谓开销（大词表下可达数百 MB）。"
-  (let* ((batch (reduce #'* (vt-shape indices)))
-         (data (make-array (list batch n-classes)
-                           :element-type 'double-float
-                           :initial-element 0.0d0)))
-    (dotimes (i batch)
-      (setf (aref data i (coerce (vt-ref indices i) 'fixnum)) 1.0d0))
-    (vt-reshape (vt-from-array data) (list batch n-classes))))
-
 (defclass mse-loss (loss) ()
   (:documentation "均方误差: L = mean((pred - target)^2)"))
 
@@ -95,10 +84,12 @@
          (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
          (log-sum-exp (vt-log sum-exp))
          (log-probs (vt-- shifted log-sum-exp))
+	 (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
          (target-flat (if (= (length (vt-shape target)) 1)
                           target
                           (vt-flatten target)))
-	 (one-hot (%ce-one-hot target-flat n-classes))
+	 (one-hot (vt-reshape (vt-take eye target-flat :axis 0)
+			      (list batch n-classes)))
          (target-smoothed
            (if (> smoothing 0.0d0)
                (vt-+ (vt-scale one-hot (- 1.0d0 smoothing))
@@ -125,10 +116,12 @@ softmax = exp-s / sum-exp（无 eps），梯度每行和精确为 0，与 PyTorc
          (exp-s (vt-exp shifted))
          (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
          (probs (vt-/ exp-s sum-exp))
+	 (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
          (target-flat (if (= (length (vt-shape target)) 1)
                           target
                           (vt-flatten target)))
-	 (one-hot (%ce-one-hot target-flat n-classes))
+	 (one-hot (vt-reshape (vt-take eye target-flat :axis 0)
+			      (list batch n-classes)))
          (target-smoothed
            (if (> smoothing 0.0d0)
                (vt-+ (vt-scale one-hot (- 1.0d0 smoothing))
