@@ -6,35 +6,103 @@
   (:use #:cl)
   (:nicknames #:neural-net #:clnn)
   (:import-from #:clvt
-   ;; ---- 张量核心 ----
-   :vt :vt-p :vt-data :vt-offset :vt-shape :vt-dtype :vt-element-type
-       :vt-zeros :vt-ones :vt-ones-like :vt-zeros-like
-       :vt-const :vt-arange :vt-random :vt-random-normal
-       :vt-transpose :vt-reshape :vt-squeeze :vt-split
-       :vt-copy :vt-contiguous :vt-contiguous-p
-       :vt-ref :vt-slice :vt-do-each :vt-map :vt-reduce
-       :vt-amax :vt-item :vt-size :vt-strides
-       :vt-+ :vt-- :vt-* :vt-/ :vt-scale :vt-=
-       :vt-matmul :vt-einsum :vt-dot :vt-outer
-       :vt-sum :vt-mean :vt-std :vt-var
-       :vt-amax :vt-amin :vt-argmax :vt-argmin
-       :vt-softmax :vt-log-softmax
-       :vt-sigmoid :vt-relu :vt-leaky-relu :vt-swish
-       :vt-softplus :vt-gelu :vt-mish
-       :vt-hard-tanh :vt-hard-sigmoid :vt-tanh
-       :vt-exp :vt-log :vt-log2 :vt-log10
-       :vt-sqrt :vt-abs :vt-expt :vt-square
-       :vt-clip :vt-concatenate :vt-norm
-       :vt-mean-squared-error :vt-binary-cross-entropy
-       :vt-cross-entropy
-       :vt-to-array :vt-from-array
-       :vt-flatten-sequence :vt-from-sequence :vt-to-list
-       :vt-inv :vt-det :vt-solve :vt-trace
-       :vt-take :vt-eye
-       :vt-copy-into :vt-flatten
-       :vt-pad :vt-repeat :vt-tile :vt-put
-       :vt-random-uniform
-       )
+		;; ---- 张量核心 ----
+   :vt
+   :vt-p
+   :vt-data
+   :vt-offset
+   :vt-shape
+   :vt-dtype
+   :vt-element-type
+   :vt-zeros
+   :vt-ones
+   :vt-ones-like
+   :vt-zeros-like
+   :vt-const
+   :vt-arange
+   :vt-random
+   :vt-random-normal
+   :vt-transpose
+   :vt-reshape
+   :vt-squeeze
+   :vt-split
+   :vt-copy
+   :vt-contiguous
+   :vt-contiguous-p
+   :vt-ref
+   :vt-slice
+   :vt-do-each
+   :vt-map
+   :vt-reduce
+   :vt-amax
+   :vt-item
+   :vt-size
+   :vt-strides
+   :vt-+
+   :vt--
+   :vt-*
+   :vt-/
+   :vt-scale
+   :vt-=
+   :vt-matmul
+   :vt-einsum
+   :vt-dot
+   :vt-outer
+   :vt-sum
+   :vt-mean
+   :vt-std
+   :variant-vars
+   :vt-amax
+   :vt-amin
+   :vt-argmax
+   :vt-argmin
+   :vt-softmax
+   :vt-log-softmax
+   :vt-sigmoid
+   :vt-relu
+   :vt-leaky-relu
+   :vt-swish
+   :vt-softplus
+   :vt-gelu
+   :vt-mish
+   :vt-hard-tanh
+   :vt-hard-sigmoid
+   :vt-tanh
+   :vt-exp
+   :vt-log
+   :vt-log2
+   :vt-log10
+   :vt-sqrt
+   :vt-abs
+   :vt-expt
+   :vt-square
+   :vt-clip
+   :vt-concatenate
+   :vt-norm
+   :vt-mean-squared-error
+   :vt-binary-cross-entropy
+   :vt-cross-entropy
+   :vt-to-array
+   :vt-from-array
+   :vt-flatten-sequence
+   :vt-from-sequence
+   :vt-to-list
+   :vt-inv
+   :vt-det
+   :vt-solve
+   :vt-trace
+   :vt-take
+   :vt-eye
+   :vt-copy-into
+   :vt-flatten
+   :vt-pad
+   :vt-repeat
+   :vt-tile
+   :vt-put
+   :vt-random-uniform
+
+   :with-seed
+   )
   (:export
    ;; ============= 协议 =============
    :forward :backward :params :grads :update!
