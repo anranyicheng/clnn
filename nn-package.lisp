@@ -51,7 +51,7 @@
    :vt-sum
    :vt-mean
    :vt-std
-   :vt-vars
+   :vt-var
    :vt-amax
    :vt-amin
    :vt-argmax
