@@ -418,9 +418,9 @@
   (:documentation
    "将 (batch, d1, d2, ...) 展平为 (batch, d1*d2*...)."))
 
-(defun make-flatten (&key (start-dim 1) (name "flatten"))
+(defun make-flatten (&key (start-dim 1) (name "flatten") (trainable nil))
   (make-instance 'flatten
-		 :start-dim start-dim :name name :trainable nil))
+		 :start-dim start-dim :name name :trainable trainable))
 
 (defmethod forward ((l flatten) input)
   (let* ((shape (vt-shape input))
@@ -448,10 +448,11 @@
   (:documentation
    "残差连接: output = input + block(input)."))
 
-(defun make-residual (block &key (name "residual"))
+(defun make-residual (block &key (name "residual")
+                                (trainable (layer-trainable-p block)))
   (make-instance 'residual
 		 :block block :name name
-		 :trainable (layer-trainable-p block)))
+		 :trainable trainable))
 
 (defmethod forward ((l residual) input)
   (let ((out (forward (residual-block l) input)))

@@ -71,68 +71,94 @@
 		 :label-smoothing (or label-smoothing 0.0d0)
 		 :name name))
 
+(defun %ce-check-logits (predicted loss-name)
+  "校验 CE 的 logits 形状，返回 (values BATCH N-CLASSES)。
+   约定与 PyTorch CrossEntropyLoss 的 (N, C) 用法一致：类别维必须是第 1 维。"
+  (let ((shape (vt-shape predicted)))
+    (unless (= (length shape) 2)
+      (error "~a: PREDICTED 必须是 2D (batch, n-classes) logits，实际形状为 ~a。~
+              序列任务请先把 (batch, seq, classes) reshape 成 (batch*seq, classes)。"
+             loss-name shape))
+    (destructuring-bind (batch n-classes) shape
+      (when (or (not (plusp batch)) (not (plusp n-classes)))
+        (error "~a: logits 形状 ~a 含空维度" loss-name shape))
+      (values batch n-classes))))
+
+(defun %ce-target (target batch n-classes smoothing)
+  "把整数标签构造为 (batch, n-classes) 的目标分布，只分配一次 batch×n-classes。
+
+   SMOOTHING = 0        -> one-hot
+   SMOOTHING = s > 0    -> (1-s)·one-hot + s/n 的均匀分布
+
+   历史实现用 (vt-eye n-classes) + vt-take 取 one-hot，每次调用都要分配
+   n-classes×n-classes 的临时单位矩阵：4000 类时单次 122 MB、23 ms，
+   50000 类时需要 20 GB，直接把整个训练进程 OOM。本实现为 O(batch×n-classes)。"
+  (let* ((flat (if (= (length (vt-shape target)) 1)
+                   target
+                   (vt-flatten target)))
+         (n-total (vt-size flat)))
+    (when (< n-total batch)
+      (error "ce-loss: 标签数量 (~a) 少于 batch (~a)" n-total batch))
+    ;; 先整体校验，避免写一半才报错
+    (dotimes (i batch)
+      (let ((idx (coerce (vt-ref flat i) 'fixnum)))
+        (unless (<= 0 idx (1- n-classes))
+          (error "ce-loss: 第 ~a 个标签 ~a 超出类别范围 [0, ~a)"
+                 i idx (1- n-classes)))))
+    (let* ((smoothing (coerce smoothing 'double-float))
+           (off (if (plusp smoothing)
+                    (/ smoothing (coerce n-classes 'double-float))
+                    0.0d0))
+           ;; 目标分布 = (1-s)·one-hot + s/n 的均匀分布：
+           ;;   非标签位置 = s/n；标签位置 = (1-s) + s/n
+           (on (+ (- 1.0d0 smoothing) off))
+           (data (make-array (* batch n-classes)
+                             :element-type 'double-float
+                             :initial-element off)))
+      (dotimes (i batch)
+        (setf (aref data (+ (* i n-classes)
+                            (coerce (vt-ref flat i) 'fixnum)))
+              on))
+      (vt-reshape (vt-from-array data :fast t) (list batch n-classes)))))
+
 (defmethod compute-loss ((l ce-loss) predicted target)
   "predicted=logits (B,C); target=整数标签 (B,). 内部做log_softmax后取 -log p_{y_i}.
 数值稳定通过 max-shift 实现（shifted ≤ 0 且 sum-exp ≥ 1），无需额外 eps。"
-  (let* ((smoothing (ce-label-smoothing l))
-         (shape (vt-shape predicted))
-         (batch (first shape))
-         (n-classes (second shape))
-         (max-val (vt-amax predicted :axis 1 :keepdims t))
-         (shifted (vt-- predicted max-val))
-         (exp-s (vt-exp shifted))
-         (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
-         (log-sum-exp (vt-log sum-exp))
-         (log-probs (vt-- shifted log-sum-exp))
-	 (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
-         (target-flat (if (= (length (vt-shape target)) 1)
-                          target
-                          (vt-flatten target)))
-	 (one-hot (vt-reshape (vt-take eye target-flat :axis 0)
-			      (list batch n-classes)))
-         (target-smoothed
-           (if (> smoothing 0.0d0)
-               (vt-+ (vt-scale one-hot (- 1.0d0 smoothing))
-                     (vt-scale (vt-ones (list batch n-classes))
-                               (/ smoothing n-classes 1.0d0)))
-               one-hot))
-         (per-sample (vt-scale
-                      (vt-sum (vt-* target-smoothed log-probs) :axis -1)
-                      -1.0d0)))
-    (ecase (loss-reduction l)
-      (:mean (vt-mean per-sample))
-      (:sum  (vt-sum per-sample))
-      (:none per-sample))))
+  (multiple-value-bind (batch n-classes)
+      (%ce-check-logits predicted "ce-loss")
+    (let* ((max-val (vt-amax predicted :axis 1 :keepdims t))
+           (shifted (vt-- predicted max-val))
+           (exp-s (vt-exp shifted))
+           (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
+           (log-sum-exp (vt-log sum-exp))
+           (log-probs (vt-- shifted log-sum-exp))
+           (target-dist (%ce-target target batch n-classes
+                                    (ce-label-smoothing l)))
+           (per-sample (vt-scale
+                        (vt-sum (vt-* target-dist log-probs) :axis -1)
+                        -1.0d0)))
+      (ecase (loss-reduction l)
+        (:mean (vt-mean per-sample))
+        (:sum  (vt-sum per-sample))
+        (:none per-sample)))))
 
 (defmethod compute-loss-gradient ((l ce-loss) predicted target)
   "dL/dlogits = softmax(logits) - target_smoothed  (:mean 时除以 batch).
 softmax = exp-s / sum-exp（无 eps），梯度每行和精确为 0，与 PyTorch 一致。"
-  (let* ((smoothing (ce-label-smoothing l))
-         (shape (vt-shape predicted))
-         (batch (first shape))
-         (n-classes (second shape))
-         (max-val (vt-amax predicted :axis 1 :keepdims t))
-         (shifted (vt-- predicted max-val))
-         (exp-s (vt-exp shifted))
-         (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
-         (probs (vt-/ exp-s sum-exp))
-	 (eye (vt-eye n-classes :value 1.0d0 :dtype :float64))
-         (target-flat (if (= (length (vt-shape target)) 1)
-                          target
-                          (vt-flatten target)))
-	 (one-hot (vt-reshape (vt-take eye target-flat :axis 0)
-			      (list batch n-classes)))
-         (target-smoothed
-           (if (> smoothing 0.0d0)
-               (vt-+ (vt-scale one-hot (- 1.0d0 smoothing))
-                     (vt-scale (vt-ones (list batch n-classes))
-                               (/ smoothing n-classes 1.0d0)))
-               one-hot))
-         (grad (vt-- probs target-smoothed)))
-    (ecase (loss-reduction l)
-      (:mean (vt-scale grad (/ 1.0d0 batch)))
-      (:sum grad)
-      (:none grad))))
+  (multiple-value-bind (batch n-classes)
+      (%ce-check-logits predicted "ce-loss-gradient")
+    (let* ((max-val (vt-amax predicted :axis 1 :keepdims t))
+           (shifted (vt-- predicted max-val))
+           (exp-s (vt-exp shifted))
+           (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
+           (probs (vt-/ exp-s sum-exp))
+           (target-dist (%ce-target target batch n-classes
+                                    (ce-label-smoothing l)))
+           (grad (vt-- probs target-dist)))
+      (ecase (loss-reduction l)
+        (:mean (vt-scale grad (/ 1.0d0 batch)))
+        (:sum grad)
+        (:none grad)))))
 
 (defclass huber-loss (loss)
   ((delta :initarg :delta

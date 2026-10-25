@@ -16,9 +16,9 @@
   - lstm/gru : 返回 (output, h, c) 多值, 且期望 (B,T,D) 输入
 如需组合这些层, 请使用对应的包装层 (rnn-sequence 等) 或自定义容器。"))
 
-(defun make-sequential (&key (name "sequential"))
+(defun make-sequential (&key (name "sequential") (trainable t))
   (make-instance 'sequential
-		 :name name :trainable t))
+		 :name name :trainable trainable))
 
 (defun seq-add! (model layer-or-layers)
   "向 Sequential 模型添加层."
@@ -226,16 +226,23 @@
              (subseq shape dim)))))
 
 (defun tensor-one-hot (indices num-classes)
-  "将整数索引转换为 one-hot 编码."
-  (let* ((batch (reduce #'* (vt-shape indices)))
+  "将整数索引（任意形状）转换为 (batch, num-classes) 的 one-hot 编码，
+   BATCH = 索引元素总数。
+   历史实现对 INDICES 直接取 (VT-REF indices i)，在 INDICES 为 2D
+   （例如 (batch, seq) 的 token id）时会报「索引数量与维度数不匹配」；
+   这里统一先展平。"
+  (let* ((flat (vt-flatten indices))
+         (batch (reduce #'* (vt-shape flat)))
          (result-data
            (make-array
             (list batch num-classes)
             :element-type 'double-float
             :initial-element 0.0d0)))
     (dotimes (i batch)
-      (let ((idx (coerce (vt-ref indices i)
-                         'fixnum)))
+      (let ((idx (coerce (vt-ref flat i) 'fixnum)))
+        (unless (<= 0 idx (1- num-classes))
+          (error "tensor-one-hot: 索引 ~a 超出范围 [0, ~a)"
+                 idx (1- num-classes)))
         (setf (aref result-data i idx) 1.0d0)))
     (vt-reshape
      (vt-from-array result-data :fast t)
@@ -871,9 +878,15 @@
       (write (model->plist model) :stream out))))
 
 (defun load-model (filepath)
-  "从文件加载模型。"
+  "从文件加载模型。
+
+   安全说明：模型文件只是纯数据的 plist，不需要任何读宏求值。
+   这里显式把 *READ-EVAL* 绑定为 NIL —— 否则恶意模型文件中的
+   #.(...) 会在 READ 阶段就被求值，等价于任意代码执行
+   （例如 #.(删除整个目录) 这种形式）。"
   (with-open-file (in filepath :direction :input)
-    (let ((*package* (find-package :nn)))
+    (let ((*package* (find-package :nn))
+          (*read-eval* nil))
       (plist->model (read in)))))
 
 
@@ -956,14 +969,16 @@
 ;;; ---------- 容器层 ----------
 
 (defmethod copy-network ((source sequential))
-  (let ((copy (make-sequential :name (copy-layer-name source))))
+  (let ((copy (make-sequential :name (copy-layer-name source)
+                               :trainable (layer-trainable-p source))))
     (dolist (layer (seq-layers source))
       (seq-add! copy (copy-network layer)))
     copy))
 
 (defmethod copy-network ((source residual))
   (make-residual (copy-network (residual-block source))
-                 :name (copy-layer-name source)))
+                 :name (copy-layer-name source)
+                 :trainable (layer-trainable-p source)))
 
 (defmethod copy-network ((source transformer-block))
   (let ((copy (make-transformer-block
@@ -1069,18 +1084,21 @@
 (defmethod copy-network ((source dropout))
   (make-dropout (dropout-p source)
                 :name (copy-layer-name source)
-                :inverted (dropout-inverted-p source)))
+                :inverted (dropout-inverted-p source)
+                :trainable (layer-trainable-p source)))
 
 ;;; ---------- 激活 / Flatten ----------
 
 (defmethod copy-network ((source activation-layer))
   (make-activation-layer (activation-kind source)
                          :leaky-alpha (act-leaky-alpha source)
-                         :name (copy-layer-name source)))
+                         :name (copy-layer-name source)
+                         :trainable (layer-trainable-p source)))
 
 (defmethod copy-network ((source flatten))
   (make-flatten :start-dim (flatten-start-dim source)
-                :name (copy-layer-name source)))
+                :name (copy-layer-name source)
+                :trainable (layer-trainable-p source)))
 
 ;;; ---------- Embedding ----------
 
@@ -1246,37 +1264,34 @@
 ;; ---- 不再依赖 slot 名字白名单启发式，多层同类网络（如多个 dense/conv/lstm）
 ;; ---- 每层都被自己的 grad-slots 方法正确清零，不会遗漏也不会误清。
 
-(defgeneric zero-grad-children (component)
-  (:documentation "返回需要递归清零的直接子组件列表。默认返回 nil。")
-  (:method ((c t)) '())
-  (:method ((m sequential)) (coerce (seq-layers m) 'list))
-  (:method ((l residual))  (list (residual-block l)))
-  (:method ((l transformer-block))
-    (list (tb-mha l) (tb-ffn1 l) (tb-ffn2 l)
-          (tb-ln1 l) (tb-ln2 l) (tb-drop1 l) (tb-drop2 l)))
-  ;; ffn1/ffn2 are dense layers directly (not sequential), no further recursion needed
-  (:method ((l neural-network-compat)) (coerce (seq-layers l) 'list)))
+(defmethod zero-grad-children ((c t)) '())
 
-(defgeneric zero-grad! (component)
-  (:documentation "将组件及其所有子层中的梯度张量清零（置为 NIL）。
-实现原则：
-  1. 每个叶子层通过 grad-slots 方法返回自己的梯度 accessor 列表（每个
-     accessor 是一个 reader 函数，其 setf 可写），通用方法统一调用 setf
-     将梯度 vt 置为 nil。
-  2. 容器层通过 zero-grad-children 返回需要递归的子组件列表。
-  3. 不做任何 slot 名字匹配/字符串白名单扫描，用户自定义层只需要
-     实现 grad-slots 方法即可被正确清零。")
-  (:method ((component null)) nil)
-  (:method ((component t))
-    ;; 梯度清零与「是否参与更新」解耦。冻结层同样要清零，
-    ;; 否则上一次的陈旧梯度会在 update 时被重新施加。
-    (when (typep component 'layer)
-      (dolist (slot-name (grad-slots component))
-        (when (and (slot-boundp component slot-name)
-                   (vt-p (slot-value component slot-name)))
-          (setf (slot-value component slot-name) nil))))
-    (dolist (child (zero-grad-children component))
-      (when child (zero-grad! child)))))
+(defmethod zero-grad-children ((m sequential))
+  (coerce (seq-layers m) 'list))
+
+(defmethod zero-grad-children ((l residual))
+  (list (residual-block l)))
+
+;; ffn1/ffn2 本身就是 dense，不需要再往下递归
+(defmethod zero-grad-children ((l transformer-block))
+  (list (tb-mha l) (tb-ffn1 l) (tb-ffn2 l)
+        (tb-ln1 l) (tb-ln2 l) (tb-drop1 l) (tb-drop2 l)))
+
+(defmethod zero-grad-children ((l neural-network-compat))
+  (coerce (seq-layers l) 'list))
+
+(defmethod zero-grad! ((component null)) nil)
+
+(defmethod zero-grad! ((component t))
+  ;; 梯度清零与「是否参与更新」解耦。冻结层同样要清零，
+  ;; 否则上一次的陈旧梯度会在 update 时被重新施加。
+  (when (typep component 'layer)
+    (dolist (slot-name (grad-slots component))
+      (when (and (slot-boundp component slot-name)
+                 (vt-p (slot-value component slot-name)))
+        (setf (slot-value component slot-name) nil))))
+  (dolist (child (zero-grad-children component))
+    (when child (zero-grad! child))))
 
 
 
@@ -1284,70 +1299,61 @@
   "zero-grad! 的别名."
   (zero-grad! model))
 
-(defgeneric transient-cache-slots (component)
-  (:documentation "返回「可以在 forward 与 backward 之间安全丢弃」的缓存 slot。
-   默认 '()：本库几乎所有前向缓存都是反向传播必需的（例如 dense 的
-   INPUT-CACHE、max-pool2d 的 argmax mask、mha 的 cache）。
-   因此 CLEAR-FORWARD-CACHE! 默认什么都不清 —— 这是刻意的：
-   任何在 forward 与 backward 之间丢掉的缓存都会让 backward 失败。
-   真正的前向缓存由 CACHE-SLOTS 列出，只能在一次完整的
-   forward + backward 之后由 CLEAR-STEP-CACHES! 清理。")
-  (:method ((c t)) '()))
+(defmethod transient-cache-slots ((c t)) '())
 
-(defgeneric clear-forward-cache! (component)
-  (:documentation "【可在任意时刻安全调用】只清理 TRANSIENT-CACHE-SLOTS 列出的缓存。
-   由于本库的前向缓存几乎都被反向传播依赖，本函数默认是空操作。
-   若要在一次完整训练步之后回收内存，请使用 CLEAR-STEP-CACHES!。
-   （历史行为：本函数曾清理全部 CACHE-SLOTS，导致 forward 与 backward
-     之间调用它必然让 backward 崩溃；现已修正。）")
-  (:method ((component null)) nil)
-  (:method ((component t)) nil)
-  (:method ((component layer))
-    (dolist (slot-name (transient-cache-slots component))
-      (when (slot-boundp component slot-name)
-        (setf (slot-value component slot-name) nil))))
-  (:method ((component sequential))
-    (dolist (layer (seq-layers component))
-      (clear-forward-cache! layer)))
-  (:method ((component residual))
-    (when (residual-block component)
-      (clear-forward-cache! (residual-block component))))
-  (:method ((component transformer-block))
-    (dolist (sub (list (tb-mha component)
-                       (tb-ffn1 component)
-                       (tb-ffn2 component)
-                       (tb-ln1 component)
-                       (tb-ln2 component)
-                       (tb-drop1 component)
-                       (tb-drop2 component)))
-      (when sub (clear-forward-cache! sub)))))
+(defmethod clear-forward-cache! ((component null)) nil)
 
-(defgeneric clear-step-caches! (component)
-  (:documentation "清除【全部】前向缓存以回收内存。
-   ⚠ 只能在一次完整的 forward + backward 之后调用；
-   在 forward 与 backward 之间调用会让 backward 因缓存缺失而失败。
-   实现与 ZERO-GRAD! 同构：叶子层看 CACHE-SLOTS，容器层递归子层。")
-  (:method ((component null)) nil)
-  (:method ((component t)) nil)
-  (:method ((component layer))
-    (dolist (slot-name (cache-slots component))
-      (when (slot-boundp component slot-name)
-        (setf (slot-value component slot-name) nil))))
-  (:method ((component sequential))
-    (dolist (layer (seq-layers component))
-      (clear-step-caches! layer)))
-  (:method ((component residual))
-    (when (residual-block component)
-      (clear-step-caches! (residual-block component))))
-  (:method ((component transformer-block))
-    (dolist (sub (list (tb-mha component)
-                       (tb-ffn1 component)
-                       (tb-ffn2 component)
-                       (tb-ln1 component)
-                       (tb-ln2 component)
-                       (tb-drop1 component)
-                       (tb-drop2 component)))
-      (when sub (clear-step-caches! sub)))))
+(defmethod clear-forward-cache! ((component t)) nil)
+
+(defmethod clear-forward-cache! ((component layer))
+  (dolist (slot-name (transient-cache-slots component))
+    (when (slot-boundp component slot-name)
+      (setf (slot-value component slot-name) nil))))
+
+(defmethod clear-forward-cache! ((component sequential))
+  (dolist (layer (seq-layers component))
+    (clear-forward-cache! layer)))
+
+(defmethod clear-forward-cache! ((component residual))
+  (when (residual-block component)
+    (clear-forward-cache! (residual-block component))))
+
+(defmethod clear-forward-cache! ((component transformer-block))
+  (dolist (sub (list (tb-mha component)
+                     (tb-ffn1 component)
+                     (tb-ffn2 component)
+                     (tb-ln1 component)
+                     (tb-ln2 component)
+                     (tb-drop1 component)
+                     (tb-drop2 component)))
+    (when sub (clear-forward-cache! sub))))
+
+(defmethod clear-step-caches! ((component null)) nil)
+
+(defmethod clear-step-caches! ((component t)) nil)
+
+(defmethod clear-step-caches! ((component layer))
+  (dolist (slot-name (cache-slots component))
+    (when (slot-boundp component slot-name)
+      (setf (slot-value component slot-name) nil))))
+
+(defmethod clear-step-caches! ((component sequential))
+  (dolist (layer (seq-layers component))
+    (clear-step-caches! layer)))
+
+(defmethod clear-step-caches! ((component residual))
+  (when (residual-block component)
+    (clear-step-caches! (residual-block component))))
+
+(defmethod clear-step-caches! ((component transformer-block))
+  (dolist (sub (list (tb-mha component)
+                     (tb-ffn1 component)
+                     (tb-ffn2 component)
+                     (tb-ln1 component)
+                     (tb-ln2 component)
+                     (tb-drop1 component)
+                     (tb-drop2 component)))
+    (when sub (clear-step-caches! sub))))
 
 (defun build-model (model &optional dummy-input)
   "强制初始化模型中所有延迟参数.
@@ -1368,6 +1374,10 @@
       (gru (ensure-gru-params l))
       (rnn-cell (ensure-rnn-cell-params l))
       (multi-head-attention (ensure-mha-params l))
+      ;; rnn-sequence 的参数全部委托给内部 cell：
+      ;; 不显式初始化的话 PARAM-COUNT 会返回 0，训练前也无法检查参数量。
+      (rnn-sequence
+       (when (rnn-seq-cell l) (ensure-rnn-cell-params (rnn-seq-cell l))))
       ;; Embedding 只需知道词表大小即可初始化
       (embedding
        (unless (emb-weight l)

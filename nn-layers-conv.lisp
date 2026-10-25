@@ -572,13 +572,16 @@
          (h (third shape))
          (w (fourth shape))
          (hw (* h w))
-         ;; 显式构造全 1 张量相乘，消除对隐式广播的依赖
-         (grad-scaled
-           (vt-* (vt-reshape grad-output
-                             (list (first shape)
-                                   (second shape) 1 1))
-                 (vt-const shape (/ 1.0d0 hw)))))
-    grad-scaled))
+         ;; 先把 (b,c) 的梯度缩成 (b,c,1,1)，再用零拷贝广播视图展开到
+         ;; 输入形状后整体缩放 —— 只分配「梯度本身」这一个满尺寸张量。
+         ;; 历史实现额外分配了一个 (b,c,h,w) 的全 1 常量参与相乘，白占一份内存。
+         (grad-small (vt-scale (vt-reshape grad-output
+                                           (list (first shape)
+                                                 (second shape) 1 1))
+                               (/ 1.0d0 hw))))
+    ;; VT-BROADCAST-TO 返回零拷贝视图（stride 中含 0），必须物化成
+    ;; 独立连续张量再返回，否则上游若就地读写会污染 grad-small。
+    (vt-copy (vt-broadcast-to grad-small shape))))
 
 ;; ---- grad-slots ----
 (defmethod grad-slots ((l conv2d))

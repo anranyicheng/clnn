@@ -18,12 +18,12 @@
   (:documentation "Dropout 正则化层."))
 
 (defun make-dropout
-    (p &key (name "dropout") (inverted t))
+    (p &key (name "dropout") (inverted t) (trainable nil))
   (assert (<= 0.0d0 p 1.0d0) (p)
           "Dropout probability must be in [0, 1]")
   (make-instance 'dropout
 		 :p p :inverted inverted
-		 :name name :trainable nil))
+		 :name name :trainable trainable))
 
 (defmethod forward ((l dropout) input)
   (if (training-p l)
@@ -96,7 +96,13 @@
    ;; --- 状态变量 ---
    ;; 注意: 类型改为 (or null fixnum) 以兼容 :initform nil
    (batch-size :initarg :batch-size :initform nil
-               :accessor bn-batch-size :type (or null fixnum)))
+               :accessor bn-batch-size :type (or null fixnum))
+   ;; 本次前向用的是批统计量 (:batch) 还是滑动统计量 (:running)。
+   ;; 反向公式在两种模式下不同：训练态要减掉均值项（因为均值/方差本身
+   ;; 依赖输入），推理态下均值/方差是常量，dx 就是 dxhat * std-inv。
+   ;; 历史实现无条件套用训练态公式，推理态前向后的反向梯度是错的。
+   (fwd-mode :initarg :fwd-mode :initform nil
+             :accessor bn-fwd-mode))
   (:documentation "批归一化层."))
 
 
@@ -138,6 +144,7 @@
         (let* ((batch (first shape)))
           (setf (bn-batch-size l) batch)
           (setf (bn-input-cache l) input)
+          (setf (bn-fwd-mode l) (if (training-p l) :batch :running))
           (if (training-p l)
               (let* ((mean-r (vt-mean input :axis 0 :keepdims t))
                      (diff (vt-- input mean-r))
@@ -163,6 +170,11 @@
                      (rv (vt-reshape (bn-running-var l) (list 1 nf)))
                      (std-inv (vt-map (lambda (v) (/ 1.0d0 (sqrt (+ v eps)))) rv))
                      (xhat (vt-* (vt-- input rm) std-inv)))
+                ;; 推理态同样要写 XHAT / STD-INV 缓存：
+                ;; 否则紧接着调用 BACKWARD 会拿到上一轮训练残留的缓存，
+                ;; 静默算出一个与本次前向完全不对应的梯度。
+                (setf (bn-xhat-cache l) xhat)
+                (setf (bn-std-inv-cache l) std-inv)
                 (if (bn-affine-p l) (vt-+ (vt-* (bn-gamma l) xhat) (bn-beta l)) xhat))))
         ;; ND case: permute C to last, flatten to 2D
         (let* ((perm (bn-permute-to-channel-last shape))
@@ -174,6 +186,7 @@
                        (vt-reshape trans (list spatial nf)))))
           (setf (bn-batch-size l) spatial)
           (setf (bn-input-cache l) (list input inv-perm tshape))
+          (setf (bn-fwd-mode l) (if (training-p l) :batch :running))
           (if (training-p l)
               (let* ((mean-r (vt-mean two-d :axis 0 :keepdims t))
                      (diff (vt-- two-d mean-r))
@@ -209,10 +222,15 @@
 			       (vt-+ (vt-* xhat-2d (bn-gamma l)) (bn-beta l))
 			       xhat-2d))
                      (y-t (vt-reshape y-2d tshape))
-                     (y (vt-transpose y-t inv-perm))) y))))))
+                     (y (vt-transpose y-t inv-perm)))
+                ;; 同上：推理态写缓存，保证 BACKWARD 与本次前向一致
+                (setf (bn-xhat-cache l) xhat-2d)
+                (setf (bn-std-inv-cache l) std-inv)
+                y))))))
 
 (defmethod backward ((l batch-norm) grad-output)
-  (let ((cache (bn-input-cache l)))
+  (let ((cache (bn-input-cache l))
+        (running-mode (eq (bn-fwd-mode l) :running)))
     (if (vt-p cache)
         (let* ((n (coerce (bn-batch-size l) 'double-float))
                (xhat (bn-xhat-cache l))
@@ -221,12 +239,16 @@
           (when (bn-affine-p l)
             (setf (bn-dgamma l) (vt-sum (vt-* grad-output xhat) :axis 0))
             (setf (bn-dbeta l) (vt-sum grad-output :axis 0)))
-          (let* ((sum-dxhat (vt-sum dxhat :axis 0 :keepdims t))
-                 (sum-dxhat-xhat (vt-sum (vt-* dxhat xhat) :axis 0 :keepdims t))
-                 (dx (vt-* std-inv (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat)
-						   (vt-* xhat sum-dxhat-xhat))
-					     (/ 1.0d0 n)))))
-            dx))
+          (if running-mode
+              ;; 推理态：均值/方差取自滑动统计量，与输入无关，
+              ;; 因此 dL/dx = dL/dxhat · std_inv（没有均值项修正）。
+              (vt-* dxhat std-inv)
+              (let* ((sum-dxhat (vt-sum dxhat :axis 0 :keepdims t))
+                     (sum-dxhat-xhat (vt-sum (vt-* dxhat xhat) :axis 0 :keepdims t))
+                     (dx (vt-* std-inv (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat)
+                                                       (vt-* xhat sum-dxhat-xhat))
+                                                 (/ 1.0d0 n)))))
+                dx)))
         (destructuring-bind (orig-input inv-perm tshape) cache
           (declare (ignore orig-input))
           (let* ((nf (bn-num-features l))
@@ -242,11 +264,16 @@
             (when (bn-affine-p l)
               (setf (bn-dgamma l) (vt-sum (vt-* g2d xhat) :axis 0))
               (setf (bn-dbeta l) (vt-sum g2d :axis 0)))
-            (let* ((sum-dxhat (vt-sum dxhat :axis 0 :keepdims t))
-                   (sum-dxhat-xhat (vt-sum (vt-* dxhat xhat) :axis 0 :keepdims t))
-                   (dx2d (vt-* std-inv-r (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat)
-							 (vt-* xhat sum-dxhat-xhat))
-						   (/ 1.0d0 n))))
+            (let* ((dx2d (if running-mode
+                             ;; 推理态：同上，无均值项修正
+                             (vt-* dxhat std-inv-r)
+                             (let* ((sum-dxhat (vt-sum dxhat :axis 0 :keepdims t))
+                                    (sum-dxhat-xhat
+                                      (vt-sum (vt-* dxhat xhat) :axis 0 :keepdims t)))
+                               (vt-* std-inv-r
+                                      (vt-scale (vt-- (vt-- (vt-scale dxhat n) sum-dxhat)
+                                                      (vt-* xhat sum-dxhat-xhat))
+                                                (/ 1.0d0 n))))))
                    (dx-t (vt-reshape dx2d tshape))
                    (dx (vt-transpose dx-t inv-perm))) dx))))))
 

@@ -107,6 +107,33 @@
   (:method ((c t) optimizer)
     (declare (ignore optimizer))))
 
+;;; ------------------------------------------------------------------
+;;; 梯度/缓存管理协议（必须在层实现之前声明）
+;;; ------------------------------------------------------------------
+;;; 说明：ZERO-GRAD-CHILDREN / ZERO-GRAD! / TRANSIENT-CACHE-SLOTS /
+;;; CLEAR-FORWARD-CACHE! / CLEAR-STEP-CACHES! 属于「协议」的一部分，
+;;; 具体方法实现放在 nn-model.lisp。历史上这几个 defgeneric 写在
+;;; nn-model.lisp（最后加载的文件）里，而 nn-layers-attention.lisp
+;;; 已经先为 ZERO-GRAD-CHILDREN 定义了方法 —— 这会让 SBCL 在加载
+;;; nn-model.lisp 时告警 "redefining ... in DEFGENERIC"，并且在
+;;; nn-model.lisp 未能加载时留下一个没有默认方法的残缺泛型。
+;;; 因此把这些泛型的声明前移到协议层。
+
+(defgeneric zero-grad-children (component)
+  (:documentation "返回需要递归清零梯度的直接子组件列表。默认返回 NIL。"))
+
+(defgeneric zero-grad! (component)
+  (:documentation "将组件及其所有子层中的梯度张量置为 NIL。"))
+
+(defgeneric transient-cache-slots (component)
+  (:documentation "返回可以在 forward 与 backward 之间安全丢弃的缓存 slot。"))
+
+(defgeneric clear-forward-cache! (component)
+  (:documentation "只清理 TRANSIENT-CACHE-SLOTS 列出的缓存（可随时调用）。"))
+
+(defgeneric clear-step-caches! (component)
+  (:documentation "清除全部前向缓存以回收内存（只能在 forward+backward 之后调用）。"))
+
 
 (defun make-loss (&rest args)
   "损失函数基类的通用构造器（与 MAKE-OPTIMIZER / MAKE-LAYER 对称）。

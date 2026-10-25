@@ -37,6 +37,34 @@
   "按系数缩放梯度；COEFF = 1.0 时原样返回。"
   (if (= coeff 1.0d0) grad (vt-scale grad coeff)))
 
+(defun assert-param-grad-alignment (opt param-list grad-list)
+  "PARAM-LIST 与 GRAD-LIST 必须严格一一对应。
+
+  OPTIMIZER-STEP 用 (loop for p in param-list for g in grad-list) 按位置配对，
+  两个列表长度不等时 LOOP 会在较短的列表结束时静默退出：后半部分参数
+  永远拿不到更新，而且没有任何报错，属于最难定位的一类 bug
+  （典型成因是某个自定义层的 PARAMS 与 GRADS 方法返回长度不同）。
+
+  这里显式校验，把静默的「部分参数不更新」变成明确报错。"
+  (let ((np (length param-list))
+        (ng (length grad-list)))
+    (unless (= np ng)
+      (error "~a: 参数项数与梯度项数不一致 (params=~a, grads=~a)。~
+              请检查各层 PARAMS 与 GRADS 方法的返回长度是否一致。"
+             (class-name (class-of opt)) np ng))))
+
+(defun assert-layer-name-alignment (opt param-list grad-list)
+  "进一步校验每个位置上的参数名与梯度名一致（能抓出顺序错乱）。
+   名字来自各层的 PARAMS 第二项与 GRADS 第一项，两者约定同名。"
+  (loop for p in param-list
+        for g in grad-list
+        for pname = (second p)
+        for gname = (car g)
+        unless (string= (string pname) (string gname))
+          do (error "~a: 参数名与梯度名错位 (param=~a, grad=~a)。~
+                     继续执行会用别的层的梯度更新本层参数。"
+                    (class-name (class-of opt)) pname gname)))
+
 (defclass sgd (optimizer)
   ((momentum :initarg :momentum
              :initform 0.0d0
@@ -61,6 +89,7 @@
         (clip (optimizer-grad-clip opt))
         (clip-coeff (global-clip-coeff grad-list clip))
         (registry (optimizer-state-registry opt)))
+    (assert-param-grad-alignment opt param-list grad-list)
     (loop for p in param-list
           for (gname . grad) in grad-list
           for owner = (first p)
@@ -127,6 +156,7 @@
         (clip-coeff (global-clip-coeff grad-list clip))
         (tt (incf (optimizer-step-count opt)))
         (registry (optimizer-state-registry opt)))
+    (assert-param-grad-alignment opt param-list grad-list)
     (loop for p in param-list
           for (gname . grad) in grad-list
 	  for owner = (first p)
@@ -210,6 +240,7 @@
         (clip-coeff (global-clip-coeff grad-list clip))
         (tt (incf (optimizer-step-count opt)))
         (registry (optimizer-state-registry opt)))
+    (assert-param-grad-alignment opt param-list grad-list)
     (loop for p in param-list
           for (gname . grad) in grad-list
 	  for owner = (first p)
@@ -287,6 +318,7 @@
         (mom (rmsprop-momentum opt))
         (wd (optimizer-weight-decay opt))
         (registry (optimizer-state-registry opt)))
+    (assert-param-grad-alignment opt param-list grad-list)
     (loop for p in param-list
           for (gname . grad) in grad-list
 	  for owner = (first p)
@@ -331,9 +363,12 @@
 			      (vt-+ (vt-map #'sqrt v-new) eps))))		   
                    (if (> mom 0.0d0)
                        ;; 有动量
-                       (let* ((buf (gethash key-buf registry
-                                            (vt-zeros
-                                             (vt-shape param))))
+                       ;; 注意：不能用 (gethash key-buf registry (vt-zeros ...))。
+                       ;; GETHASH 的默认值是「函数实参」，每步都会先分配一个
+                       ;; 参数规模的零张量再丢弃，纯属浪费。
+                       (let* ((buf (or (gethash key-buf registry)
+                                       (setf (gethash key-buf registry)
+                                             (vt-zeros (vt-shape param)))))
                               (new-buf (vt-+ (vt-scale buf mom)
                                              (vt-/ g-reg denom))))
 			 (setf (gethash key-buf registry)
@@ -372,6 +407,7 @@
          (wd (optimizer-weight-decay opt))
          (tt (incf (optimizer-step-count opt)))
          (registry (optimizer-state-registry opt)))
+    (assert-param-grad-alignment opt param-list grad-list)
     (loop for p in param-list
           for (gname . grad) in grad-list
 	  for owner = (first p)

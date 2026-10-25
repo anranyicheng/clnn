@@ -47,27 +47,83 @@
 		 :name name :trainable trainable))
 
 (defun renorm-embedding-weights! (l)
-  "按 PyTorch 语义就地重归一化嵌入矩阵：
-   对 L2 范数超过 MAX-NORM 的行缩放到 MAX-NORM，
-   并把逐行缩放系数缓存到 EMB-NORM-SCALE，供反向传播还原梯度尺度。"
+  "把整张 (V, D) 嵌入表里 L2 范数超过 MAX-NORM 的行缩放到 MAX-NORM。
+   这是「对全表做一次」的显式工具（例如训练结束后的整理）。
+
+   注意：FORWARD 不走这条路径 —— 它只重归一化本次前向真正用到的行
+   （见 RENORM-EMBEDDING-ROWS!）。整表重归一化是 O(V·D)，
+   在 V=50000 时每次前向都是几千万次元素访问，无法接受。
+
+   实现已向量化：行范数由 VT-SUM 沿 axis=1 一次算出，
+   不再逐元素 VT-REF 扫描全表。"
   (let* ((w (emb-weight l))
          (ne (emb-num-embeddings l))
          (ed (emb-embedding-dim l))
          (max-norm (coerce (emb-max-norm l) 'double-float))
+         (norms (vt-sqrt (vt-sum (vt-square w) :axis 1)))  ; (V,)
          (scale (vt-ones (list ne))))
     (dotimes (i ne)
-      (let ((sq 0.0d0))
-        (dotimes (j ed)
-          (let ((v (coerce (vt-ref w i j) 'double-float)))
-            (incf sq (* v v))))
-        (let ((norm (sqrt sq)))
-          (when (and (> norm max-norm) (plusp norm))
-            (let ((s (/ max-norm norm)))
-              (setf (vt-ref scale i) s)
-              (dotimes (j ed)
-                (setf (vt-ref w i j)
-                      (* s (coerce (vt-ref w i j) 'double-float)))))))))
+      (let ((norm (coerce (vt-ref norms i) 'double-float)))
+        (when (and (> norm max-norm) (plusp norm))
+          (let ((s (/ max-norm norm)))
+            (setf (vt-ref scale i) s)
+            (dotimes (j ed)
+              (setf (vt-ref w i j)
+                    (* s (coerce (vt-ref w i j) 'double-float))))))))
     (setf (emb-norm-scale l) scale)))
+
+(defun %embedding-unique-rows (indices ne)
+  "返回本次前向引用到的、位于 [0, NE) 内的唯一行号列表（升序）。"
+  (let* ((flat (vt-flatten indices))
+         (n (reduce #'* (vt-shape flat)))
+         (seen (make-hash-table :test #'eql))
+         (rows '()))
+    (dotimes (i n)
+      (let ((idx (coerce (vt-ref flat i) 'fixnum)))
+        (unless (or (minusp idx) (>= idx ne) (gethash idx seen))
+          (setf (gethash idx seen) t)
+          (push idx rows))))
+    (nreverse rows)))
+
+(defun renorm-embedding-rows! (l indices)
+  "只对 INDICES 中真正用到的行做 max-norm 重归一化（PyTorch 语义）。
+
+   复杂度 O(unique(indices) × D)：行范数用一次向量化 VT-SUM 算出，
+   只有确实超限的行才逐元素缩放。与词表大小 V 无关。
+
+   若没有任何行超限（训练收敛后的常态），直接把 EMB-NORM-SCALE 置 NIL，
+   连 (V,) 的缩放向量都不分配。"
+  (let* ((w (emb-weight l))
+         (ne (emb-num-embeddings l))
+         (ed (emb-embedding-dim l))
+         (max-norm (coerce (emb-max-norm l) 'double-float))
+         (rows (%embedding-unique-rows indices ne)))
+    (if (null rows)
+        (setf (emb-norm-scale l) nil)
+        (let* ((idx-array (make-array (length rows) :element-type '(signed-byte 64)))
+               (norms nil)
+               (over '()))
+          (loop for r in rows for i from 0
+                do (setf (aref idx-array i) r))
+          (setf norms (vt-sqrt
+                       (vt-sum (vt-square (vt-take w (vt-from-array idx-array
+                                                                    :dtype :int64)
+                                                   :axis 0))
+                               :axis 1)))
+          (loop for r in rows for i from 0
+                do (let ((norm (coerce (vt-ref norms i) 'double-float)))
+                     (when (and (> norm max-norm) (plusp norm))
+                       (push (cons r (/ max-norm norm)) over))))
+          (if (null over)
+              (setf (emb-norm-scale l) nil)
+              (let ((scale (vt-ones (list ne))))
+                (dolist (pair over)
+                  (destructuring-bind (row . s) pair
+                    (setf (vt-ref scale row) s)
+                    (dotimes (j ed)
+                      (setf (vt-ref w row j)
+                            (* s (coerce (vt-ref w row j) 'double-float))))))
+                (setf (emb-norm-scale l) scale)))))))
 
 (defmethod forward ((l embedding) indices)
   "前向传播: 查表获取嵌入向量."
@@ -81,9 +137,12 @@
            0.01d0)))
   ;; 先缓存 indices
   (setf (emb-indices-cache l) indices)
-  ;; max-norm 重归一化（就地缩放超限行，并缓存逐行系数）
-  (when (emb-max-norm l)
-    (renorm-embedding-weights! l))
+  ;; max-norm 重归一化：只处理本次用到的行，并缓存逐行系数
+  (if (emb-max-norm l)
+      (renorm-embedding-rows! l indices)
+      ;; 关闭 max-norm 时必须清掉上一轮的缩放系数，
+      ;; 否则 BACKWARD 会拿陈旧系数去缩放梯度。
+      (setf (emb-norm-scale l) nil))
   (let* ((weights (emb-weight l))
          (edim (emb-embedding-dim l))
          (idx-shape (vt-shape indices))

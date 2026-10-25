@@ -259,21 +259,42 @@
 ;;; ---------------------------------------------------------------
 ;;; P2-1  embedding max-norm
 ;;; ---------------------------------------------------------------
-(rt "P2-1" "embedding max-norm 生效"
+;;; 语义说明（本次修正）：max-norm 只约束「本次前向真正用到」的行，
+;;; 与 PyTorch torch.embedding_renorm_ 一致。旧实现对整张 (V, D) 表
+;;; 逐元素重归一化，复杂度 O(V·D)，V=50000 时每个 forward 要走
+;;; 320 万次泛型访问（单步约 70ms）。
+;;; 因此这里只断言「被使用的行」满足约束，并额外断言「未使用的行」
+;;; 完全未被触碰 —— 这同时把旧测试里对未初始化行的偶然成立变成确定性质。
+(rt "P2-1" "embedding max-norm 约束本次用到的行"
   (let ((e (make-embedding 20 8 :max-norm 0.05d0)))
     (set-global-training! t)
     (forward e (vt-from-sequence '(1 2 3) :dtype :int64))
     (let* ((w (emb-weight e))
-           (ne (emb-num-embeddings e))
            (ed (emb-embedding-dim e))
            (worst 0.0d0))
-      (dotimes (i ne)
+      (dolist (i '(1 2 3))
         (let ((sq 0.0d0))
           (dotimes (j ed)
             (let ((v (coerce (vt-ref w i j) 'double-float)))
               (incf sq (* v v))))
           (setf worst (max worst (sqrt sq)))))
       (rt-assert (<= worst (+ 0.05d0 1d-9))))))
+
+(rt "P2-1" "embedding max-norm 不触碰本次没用到行"
+  (let ((e (make-embedding 20 8 :max-norm 0.05d0)))
+    (set-global-training! t)
+    ;; 先初始化权重
+    (forward e (vt-from-sequence '(0) :dtype :int64))
+    (let* ((w (emb-weight e))
+           (ed (emb-embedding-dim e))
+           (before (loop for i from 4 below 20
+                         collect (loop for j below ed
+                                       collect (coerce (vt-ref w i j) 'double-float)))))
+      (forward e (vt-from-sequence '(1 2 3) :dtype :int64))
+      (let ((after (loop for i from 4 below 20
+                         collect (loop for j below ed
+                                       collect (coerce (vt-ref w i j) 'double-float)))))
+        (rt-assert (equal before after))))))
 
 (rt "P2-1" "embedding max-norm 不影响未超限的行 / 反向可用"
   (let ((e (make-embedding 5 4 :max-norm 100.0d0)))

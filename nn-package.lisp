@@ -96,6 +96,7 @@
    :vt-copy-into
    :vt-flatten
    :vt-pad
+   :vt-broadcast-to
    :vt-repeat
    :vt-tile
    :vt-put
