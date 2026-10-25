@@ -1,4 +1,18 @@
-;;;; 端到端训练测试 (15个用例)
+;;;; test-end-to-end-training.lisp
+;;;;
+;;;; 端到端训练测试（原文件名 run-all-examples.lisp，实际内容是测试，
+;;;; 也不是「运行 examples/ 下脚本」的入口，已重命名）。
+;;;;
+;;;; 16 个用例：Dense MLP / GELU / Sigmoid+Tanh / 各类损失 / 深层网络等，
+;;;; 每个都训练 150 步并断言最终 loss 低于阈值。
+;;;; 整个文件约 2 秒，属于纯合成数据、无外部依赖的快速集成测试。
+;;;;
+;;;; 用法:
+;;;;   sbcl --dynamic-space-size 4096 --non-interactive \
+;;;;        --load tests/test-end-to-end-training.lisp
+;;;;
+;;;; 末尾打印 "Total: N passed, M failed"。
+
 (in-package #:cl-user)
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (ql:quickload :clnn))
@@ -239,3 +253,6 @@
     (ck "Deep-8 <1.0" (< l 1.0d0))))
 
 (format t "~%========== Total: ~a passed, ~a failed ==========~%" *pass* *fail*)
+
+;;; 统一的 CI 退出码：存在失败项时以非 0 退出（仅测试脚本使用）
+#+sbcl (when (plusp *fail*) (sb-ext:exit :code 1))

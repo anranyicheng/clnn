@@ -15,7 +15,7 @@
 ;;;;   PART 2 (nn 包)   —— 卷积实现 + 基准测试
 ;;;;
 ;;;; 加载方式：
-;;;;   (load "conv2d-batched.lisp")
+;;;;   (load "examples/conv2d-batched.lisp")
 ;;;;   (in-package :nn)
 ;;;;   (bench-conv2d-suite)
 ;;;;

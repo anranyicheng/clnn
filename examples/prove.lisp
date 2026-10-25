@@ -1,3 +1,18 @@
+;;;; prove.lisp — 逐层正确性演示（例 1 ~ 例 10）
+;;;;
+;;;; 每个 test-* 函数是一个独立小实验：XOR、螺旋分类、各层梯度对拍、
+;;;; CNN、RNN 序列求和、Transformer 收敛、序列化往返等。
+;;;; 目的是「肉眼可见地证明每一块能跑」，不是回归套件 ——
+;;;; 严格断言式的检查见 tests/gradcheck-all-layers.lisp 与
+;;;; tests/clnn-test-suite.lisp。
+;;;;
+;;;; 用法：
+;;;;   (in-package :clnn)
+;;;;   (load "examples/prove.lisp")
+;;;;   (test-xor) / (test-spiral) / (test-transformer-converge) ...
+;;;;
+;;;; 注：文件末尾的自动运行段已被 #| ... |# 注释掉，按需手动调用。
+
 (in-package :clnn)
 
 (defun test-xor ()

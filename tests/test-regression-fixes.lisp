@@ -1,5 +1,14 @@
-;;;; test-regression-fixes.lisp — 代码审查所报缺陷的回归测试
-;;;; 每个用例对应报告中的一个缺陷编号；修复回退时应当失败。
+;;;; test-regression-fixes.lisp
+;;;;
+;;;; 代码审查所报缺陷的回归测试，每个用例带缺陷编号（P1-x / P2-x …），
+;;;; 修复回退时应当失败。共 26 项。
+;;;;
+;;;; 用法（需先加载系统）:
+;;;;   sbcl --dynamic-space-size 4096 --non-interactive \
+;;;;        --eval '(require :asdf)' --eval '(asdf:load-system :clnn)' \
+;;;;        --load tests/test-regression-fixes.lisp
+;;;;
+;;;; 加载即执行，末尾打印 "回归测试: N PASS, M FAIL"。
 (in-package :clnn)
 
 (defparameter *rt-pass* 0)

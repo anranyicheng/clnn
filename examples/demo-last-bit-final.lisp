@@ -1,11 +1,15 @@
 ;;;; demo-last-bit-final.lisp
-;;;; 任务：输入长度 10 的 0/1 序列，输出最后一位的值。
+;;;;
+;;;; 说明：本文件保留了同一示例的三次迭代（TAKE-LAST 类被定义了三次，
+;;;; 槽结构完全相同），编译时会看到 layout 重定义警告；加载与运行正常，
+;;;; 最后一份定义生效。
+;;;;
 ;;;; 模型：LSTM(1→16) → TakeLastTimeStep → Dense(16→2)
 ;;;; 预期：test acc → 100%（3–5 epoch 内）
 ;;;;
 ;;;; 用法：
 ;;;;   (in-package :nn)
-;;;;   (load "demo-last-bit-final.lisp")
+;;;;   (load "examples/demo-last-bit-final.lisp")
 ;;;;   (demo-last-bit-final)
 
 (in-package :nn)

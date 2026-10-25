@@ -13,7 +13,7 @@
 (ql:quickload '(:clnn :chipz))
 (in-package :nn)
 
-;;; ---- 读 MNIST（复用 tests/mnist.lisp 的解压逻辑，但只取子集）----
+;;; ---- 读 MNIST（与 examples/mnist.lisp 类似的解压逻辑，但只取子集）----
 (defun mnist-path (f)
   (asdf:system-relative-pathname "clnn" (concatenate 'string "mnist-data/" f)))
 

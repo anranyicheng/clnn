@@ -1,6 +1,13 @@
-;;;; ================================================================
-;;;; 审查报告 Bug 验证测试 (修正版 v2)
-;;;; ================================================================
+;;;; audit-verify.lisp
+;;;;
+;;;; 历史审查报告中缺陷条目的验证测试，共 11 项：梯度裁剪、克隆独立性、
+;;;; 变换操作不破坏原始数据、LSTM 梯度累积等。
+;;;;
+;;;; 用法:
+;;;;   sbcl --dynamic-space-size 4096 --non-interactive \
+;;;;        --load tests/audit-verify.lisp
+;;;;
+;;;; 加载即执行，末尾打印 "通过: N / 失败: M"。
 (in-package #:cl-user)
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (ql:quickload :clnn))
@@ -266,3 +273,6 @@
 (format t "  通过: ~a~%" *audit-pass*)
 (format t "  失败: ~a~%" *audit-fail*)
 (format t "~%")
+
+;;; 统一的 CI 退出码：存在失败项时以非 0 退出（仅测试脚本使用）
+#+sbcl (when (plusp *audit-fail*) (sb-ext:exit :code 1))

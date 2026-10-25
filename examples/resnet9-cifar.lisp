@@ -1,4 +1,9 @@
-;;;; resnet9-cifar-tiny.lisp
+;;;; resnet9-cifar.lisp
+;;;;
+;;;; 说明：本文件由两次迭代的版本拼接而成，因此编译时会看到
+;;;; "Duplicate definition for ... found in one file" 警告。
+;;;; 后一份定义会覆盖前一份（区别是 train-resnet9-cifar 的默认 epochs
+;;;; 从 5 改成 10），加载与运行都正常；如需清理可删掉前一份。
 ;;;; ============================================================================
 ;;;; ResNet-9 mini on CIFAR-10 —— 内存安全版
 ;;;; ============================================================================
@@ -15,7 +20,7 @@
 ;;;;
 ;;;; 运行：
 ;;;;   (in-package :nn)
-;;;;   (load "resnet9-cifar-tiny.lisp")
+;;;;   (load "examples/resnet9-cifar.lisp")
 ;;;;   (run-resnet9-cifar)
 ;;;;
 ;;;; 预期：5 epoch 内 test-acc 55%+，总耗时 ~8–15 分钟（CPU）
@@ -329,7 +334,7 @@
 ;;;;
 ;;;; 【运行】
 ;;;;   (in-package :nn)
-;;;;   (load "resnet9-cifar.lisp")
+;;;;   (load "examples/resnet9-cifar.lisp")
 ;;;;   (train-resnet9-cifar)                  ; 默认 10000 训练 / 2000 测试
 ;;;;   (train-resnet9-cifar :n-train 50000)   ; 全量（内存 ~1.2GB）
 ;;;;

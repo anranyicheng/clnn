@@ -1,4 +1,16 @@
-;;;; mnist-common
+;;;; mnist.lisp
+;;;;
+;;;; MNIST 数据加载器 + 两个全连接基线（供其它示例复用）。
+;;;;
+;;;; 本文件既提供数据加载函数，也提供可直接调用的训练入口；
+;;;; 加载本文件不会自动开始训练。
+;;;;
+;;;; 用法：
+;;;;   (in-package :clnn)
+;;;;   (load "examples/mnist.lisp")
+;;;;   (ensure-mnist-data)          ; 解压并载入 60000/10000 张
+;;;;   (train-dense-mnist :epochs 5)
+;;;;
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (ql:quickload '(:clnn :chipz)))

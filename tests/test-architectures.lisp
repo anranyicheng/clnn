@@ -1,7 +1,23 @@
-;;;; ================================================================
-;;; 通用回归测试引擎 (无全局变量，纯函数打包)
-;;;; ================================================================
+;;;; test-architectures.lisp
+;;;;
+;;;; 架构级回归测试（原文件名 example.lisp，实际内容是测试而非常示例，
+;;;; 已重命名）。覆盖 CNN / LSTM / Transformer / Inception / 残差 /
+;;;; 全局池化 / Dropout 切换 / 1D 输入边界等 14 个组合场景。
+;;;;
+;;;; 每个用例都训练若干步并断言 loss 下降，因此属于「集成测试」而不是
+;;;; 单元测试；单个用例 0.2~2 秒，整个文件约 4 秒。
+;;;;
+;;;; 用法:
+;;;;   sbcl --dynamic-space-size 4096 --non-interactive \
+;;;;        --eval '(require :asdf)' --eval '(asdf:load-system :clnn)' \
+;;;;        --load tests/test-architectures.lisp
+;;;;
+;;;; 加载即执行，末尾打印通过/失败汇总。
+
 (in-package #:nn)
+
+(defvar *arch-fail* 0
+  "本文件内显式判定的失败项数量（其余用例失败会直接抛错）。")
 
 (defun tensor-has-nan-p (vt)
   "检查张量中是否包含 NaN 或 Inf。利用 NaN 的唯一特性：x /= x"
@@ -457,7 +473,8 @@
       (format t "最终输出均值 (应接近 1.0): ~a~%" mean-val)
       (if (< (abs (- mean-val 1.0d0)) 0.1d0)
           (format t "[通过] DAG多分支计算与Concat反向传播正确!~%")
-          (format t "[失败] 输出未逼近目标，反向传播可能有误!~%")))))
+          (progn (incf *arch-fail*)
+                 (format t "[失败] 输出未逼近目标，反向传播可能有误!~%"))))))
 
 (defun test-classification-loss ()
   (format t "~%=== [测试 11] 真实分类交叉熵损失 ===~%")
@@ -774,4 +791,7 @@
   )
 
 (run-all-tests)
+(format t "~%[汇总] 显式判定失败项: ~a~%" *arch-fail*)
+;;; 统一的 CI 退出码：存在失败项时以非 0 退出（仅测试脚本使用）
+#+sbcl (when (plusp *arch-fail*) (sb-ext:exit :code 1))
 

@@ -1,10 +1,26 @@
-;;;; cartpole-reinforce-v3.lisp
-;;;; CartPole + REINFORCE 完整可运行版本。
+;;;; cartpole-reinforce.lisp
+;;;; 强化学习示例合集：CartPole / MountainCar / LunarLander 上的
+;;;; REINFORCE / A2C / DQN / PPO。
 ;;;;
-;;;; 用法：
+;;;; 本文件包含 9 个独立示例（原本是 9 个单独文件，现已合并）：
+;;;;   1. REINFORCE             (train-reinforce)
+;;;;   2. A2C                   (train-a2c)
+;;;;   3. DQN / CartPole        (train-dqn)
+;;;;   4. DQN / MountainCar     (train-mountaincar-dqn)
+;;;;   5. DQN / LunarLander     (train-lunarlander-dqn)
+;;;;   6. DQN / LunarLander v2  (train-lunarlander-dqn-v2)
+;;;;   7. PPO / CartPole        (train-ppo)
+;;;;   8. PPO / CartPole v2     (train-ppo-v2)
+;;;;   9. PPO / CartPole v3     (train-ppo-v3)
+;;;;
+;;;; 用法（一次加载即可，无需再加载其它文件）：
 ;;;;   (in-package :nn)
-;;;;   (load "cartpole-reinforce-v3.lisp")
-;;;;   (train-reinforce-v3 :episodes 500 :lr 1e-3 :hidden 32)
+;;;;   (load "examples/cartpole-reinforce.lisp")
+;;;;   (train-reinforce :episodes 500 :lr 1e-3 :hidden 32)
+;;;;
+;;;; 注：第 5、6 段是同一个任务的 v1 / v2，环境结构体与环境函数用
+;;;;     前缀区分（LUNARLANDER / LL-* 与 LUNARLANDER-V2 / LLV2-*），
+;;;;     否则两个不同槽数的 DEFSTRUCT 会在加载时互相冲突。
 ;;;;
 ;;;; 预期：500 episodes 后 avg-last-100 → 170+，测试平均回报 → 400+
 ;;;;
@@ -206,7 +222,11 @@
       (format t "平均回报: ~,1f~%" (/ (reduce #'+ test-returns) 20.0)))
     model))
 
-(train-reinforce)
+;; 第 1 段原本在加载时就自动跑 500 episode 的 REINFORCE。为了让本文件
+;; 只负责「定义」、由使用者显式触发训练（与其余 8 段一致），这里注释掉：
+;;   (train-reinforce)
+;; 需要看演示效果时手动执行下面这一行即可：
+;;   (train-reinforce :episodes 500 :lr 1e-3 :hidden 32)
 
 ;;;; cartpole-a2c.lisp
 ;;;; CartPole + A2C (Advantage Actor-Critic)
@@ -217,10 +237,8 @@
 ;;;;   3. advantage 当作常数处理（等价于 stop-gradient）
 ;;;;   4. 方差降低 3-5 倍，收敛更稳
 ;;;;
-;;;; 前置：cartpole-reinforce-v3.lisp 已加载（复用环境 + 工具函数）
+;;;; 前置：同文件内的 REINFORCE 段（复用环境 + 工具函数）
 ;;;; 用法：
-;;;;   (in-package :nn)
-;;;;   (load "cartpole-a2c.lisp")
 ;;;;   (train-a2c :episodes 500 :actor-lr 1e-3 :critic-lr 5e-3 :hidden 32)
 
 (in-package :nn)
@@ -342,10 +360,8 @@
 ;;;; cartpole-dqn.lisp
 ;;;; CartPole + DQN，修正超参后的版本。
 ;;;;
-;;;; 前置：cartpole-reinforce-v3.lisp 已加载（复用环境）
+;;;; 前置：同文件内的 REINFORCE 段（复用环境）
 ;;;; 用法：
-;;;;   (in-package :nn)
-;;;;   (load "cartpole-dqn.lisp")
 ;;;;   (train-dqn)
 
 (in-package :nn)
@@ -606,8 +622,8 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
 ;;;;   - 奖励：每步 -1，到达目标（位置 ≥ 0.5）才终止
 ;;;;   - 稀疏奖励：随机策略永远到不了目标，必须真正探索
 ;;;;
-;;;; 前置：cartpole-reinforce-v3.lisp 已加载
-;;;; 用法：(in-package :nn) (load "mountaincar-dqn.lisp") (train-mountaincar-dqn)
+;;;; 前置：同文件内的 REINFORCE 段（复用环境）
+;;;; 用法：(train-mountaincar-dqn)
 
 (in-package :nn)
 
@@ -927,8 +943,8 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
 ;;;;   - 动作更多 (4 vs 2/3)
 ;;;;   - 物理更复杂 (推力/重力/旋转/着陆判定)
 ;;;;
-;;;; 前置：cartpole-reinforce-v3.lisp 已加载
-;;;; 用法：(in-package :nn) (load "lunarlander-dqn.lisp") (train-lunarlander-dqn)
+;;;; 前置：同文件内的 REINFORCE 段（复用环境）
+;;;; 用法：(train-lunarlander-dqn)
 
 (in-package :nn)
 
@@ -1306,7 +1322,7 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
 
 
 
-;;;; lunarlander-dqn-v2.lisp
+;;;; lunarlander-v2-dqn-v2.lisp
 ;;;; LunarLander + DQN（修正版）
 ;;;;
 ;;;; 相比 v1 的 4 类改动：
@@ -1315,33 +1331,33 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
 ;;;;   3. 着陆判定：速度/角度容忍度放宽，平台加宽
 ;;;;   4. 超参：epsilon 衰减 100k→250k，episodes 2000→3000
 ;;;;
-;;;; 前置：cartpole-reinforce-v3.lisp 已加载
-;;;; 用法：(in-package :nn) (load "lunarlander-dqn-v2.lisp") (train-lunarlander-dqn-v2)
+;;;; 前置：同文件内的 REINFORCE 段（复用环境）
+;;;; 用法：(train-lunarlander-dqn-v2)
 
 (in-package :nn)
 
 ;;; ============================================================
 ;;; 1. LunarLander 环境（修正物理）
 ;;; ============================================================
-(defparameter *ll-dt* 0.02d0)
-(defparameter *ll-gravity* -10.0d0)
-(defparameter *ll-main-thrust* 20.0d0)      ; ← 13→20，更可控
-(defparameter *ll-side-thrust* 1.5d0)       ; ← 0.6→1.5，旋转响应更快
-(defparameter *ll-main-fuel-cost* 0.10d0)   ; ← 0.30→0.10
-(defparameter *ll-side-fuel-cost* 0.01d0)   ; ← 0.03→0.01
-(defparameter *ll-max-time* 1000)
-(defparameter *ll-pad-x* 0.0d0)
-(defparameter *ll-pad-width* 0.6d0)         ; ← 0.4→0.6，平台更宽
+(defparameter *llv2-dt* 0.02d0)
+(defparameter *llv2-gravity* -10.0d0)
+(defparameter *llv2-main-thrust* 20.0d0)      ; ← 13→20，更可控
+(defparameter *llv2-side-thrust* 1.5d0)       ; ← 0.6→1.5，旋转响应更快
+(defparameter *llv2-main-fuel-cost* 0.10d0)   ; ← 0.30→0.10
+(defparameter *llv2-side-fuel-cost* 0.01d0)   ; ← 0.03→0.01
+(defparameter *llv2-max-time* 1000)
+(defparameter *llv2-pad-x* 0.0d0)
+(defparameter *llv2-pad-width* 0.6d0)         ; ← 0.4→0.6，平台更宽
 
-(defstruct lunarlander
+(defstruct lunarlander-v2
   (x 0.0d0) (y 0.0d0)
   (vx 0.0d0) (vy 0.0d0)
   (theta 0.0d0) (omega 0.0d0)
   (leg-left 0) (leg-right 0)
   (steps 0))
 
-(defun ll-reset ()
-  (make-lunarlander
+(defun llv2-reset ()
+  (make-lunarlander-v2
    :x (+ -0.05d0 (* 0.1d0 (random 1.0d0)))    ; x ∈ [-0.05, 0.05]
    :y (+ 1.6d0 (* 0.2d0 (random 1.0d0)))      ; y ∈ [1.6, 1.8]
    :vx (+ -0.05d0 (* 0.1d0 (random 1.0d0)))   ; vx 小
@@ -1351,48 +1367,48 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
    :leg-left 0 :leg-right 0
    :steps 0))
 
-(defun ll-step (s action)
+(defun llv2-step (s action)
   "ACTION ∈ {0: noop, 1: left, 2: main, 3: right}。"
   (let ((reward 0.0d0)
         (done nil))
     ;; ---- 1. 施力 ----
-    (let ((ox (- (sin (lunarlander-theta s))))
-          (oy (cos (lunarlander-theta s))))
+    (let ((ox (- (sin (lunarlander-v2-theta s))))
+          (oy (cos (lunarlander-v2-theta s))))
       (when (= action 2)
-        (incf (lunarlander-vx s) (* ox *ll-main-thrust* *ll-dt*))
-        (incf (lunarlander-vy s) (* oy *ll-main-thrust* *ll-dt*))
-        (decf reward *ll-main-fuel-cost*))
+        (incf (lunarlander-v2-vx s) (* ox *llv2-main-thrust* *llv2-dt*))
+        (incf (lunarlander-v2-vy s) (* oy *llv2-main-thrust* *llv2-dt*))
+        (decf reward *llv2-main-fuel-cost*))
       (when (= action 1)
-        (decf (lunarlander-omega s) (* *ll-side-thrust* *ll-dt*))
-        (decf reward *ll-side-fuel-cost*))
+        (decf (lunarlander-v2-omega s) (* *llv2-side-thrust* *llv2-dt*))
+        (decf reward *llv2-side-fuel-cost*))
       (when (= action 3)
-        (incf (lunarlander-omega s) (* *ll-side-thrust* *ll-dt*))
-        (decf reward *ll-side-fuel-cost*)))
+        (incf (lunarlander-v2-omega s) (* *llv2-side-thrust* *llv2-dt*))
+        (decf reward *llv2-side-fuel-cost*)))
 
     ;; ---- 2. 重力 + 运动 ----
-    (incf (lunarlander-vy s) (* *ll-gravity* *ll-dt*))
-    (setf (lunarlander-theta s) (+ (lunarlander-theta s)
-                                    (* (lunarlander-omega s) *ll-dt*)))
-    (incf (lunarlander-x s) (* (lunarlander-vx s) *ll-dt*))
-    (incf (lunarlander-y s) (* (lunarlander-vy s) *ll-dt*))
+    (incf (lunarlander-v2-vy s) (* *llv2-gravity* *llv2-dt*))
+    (setf (lunarlander-v2-theta s) (+ (lunarlander-v2-theta s)
+                                    (* (lunarlander-v2-omega s) *llv2-dt*)))
+    (incf (lunarlander-v2-x s) (* (lunarlander-v2-vx s) *llv2-dt*))
+    (incf (lunarlander-v2-y s) (* (lunarlander-v2-vy s) *llv2-dt*))
 
     ;; ---- 3. 速度限幅 ----
-    (setf (lunarlander-vx s) (max -5.0d0 (min 5.0d0 (lunarlander-vx s))))
-    (setf (lunarlander-vy s) (max -5.0d0 (min 5.0d0 (lunarlander-vy s))))
-    (setf (lunarlander-omega s) (max -5.0d0 (min 5.0d0 (lunarlander-omega s))))
+    (setf (lunarlander-v2-vx s) (max -5.0d0 (min 5.0d0 (lunarlander-v2-vx s))))
+    (setf (lunarlander-v2-vy s) (max -5.0d0 (min 5.0d0 (lunarlander-v2-vy s))))
+    (setf (lunarlander-v2-omega s) (max -5.0d0 (min 5.0d0 (lunarlander-v2-omega s))))
 
     ;; ---- 4. 腿接触状态（简化：低高度就算接触）----
-    (setf (lunarlander-leg-left s)  (if (<= (lunarlander-y s) 0.10d0) 1 0))
-    (setf (lunarlander-leg-right s) (if (<= (lunarlander-y s) 0.10d0) 1 0))
+    (setf (lunarlander-v2-leg-left s)  (if (<= (lunarlander-v2-y s) 0.10d0) 1 0))
+    (setf (lunarlander-v2-leg-right s) (if (<= (lunarlander-v2-y s) 0.10d0) 1 0))
 
     ;; ---- 5. 着陆 / 坠毁 ----
-    (when (<= (lunarlander-y s) 0.0d0)
-      (setf (lunarlander-y s) 0.0d0)
-      (let* ((on-pad (and (< (abs (- (lunarlander-x s) *ll-pad-x*))
-                            (/ *ll-pad-width* 2.0d0))
-                          (< (abs (lunarlander-theta s)) (/ pi 3.0d0))   ; ← 放宽
-                          (< (abs (lunarlander-vx s)) 2.0d0)              ; ← 放宽
-                          (< (abs (lunarlander-vy s)) 2.5d0))))           ; ← 放宽
+    (when (<= (lunarlander-v2-y s) 0.0d0)
+      (setf (lunarlander-v2-y s) 0.0d0)
+      (let* ((on-pad (and (< (abs (- (lunarlander-v2-x s) *llv2-pad-x*))
+                            (/ *llv2-pad-width* 2.0d0))
+                          (< (abs (lunarlander-v2-theta s)) (/ pi 3.0d0))   ; ← 放宽
+                          (< (abs (lunarlander-v2-vx s)) 2.0d0)              ; ← 放宽
+                          (< (abs (lunarlander-v2-vy s)) 2.5d0))))           ; ← 放宽
         (if on-pad
             (progn
               (incf reward 200.0d0)   ; ← +100→+200
@@ -1402,38 +1418,38 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
               (setf done t)))))
 
     ;; ---- 6. 越界 ----
-    (when (or (> (abs (lunarlander-x s)) 1.5d0)
-              (> (lunarlander-y s) 2.5d0))    ; ← 天花板提高
+    (when (or (> (abs (lunarlander-v2-x s)) 1.5d0)
+              (> (lunarlander-v2-y s) 2.5d0))    ; ← 天花板提高
       (incf reward -100.0d0)
       (setf done t))
-    (when (>= (lunarlander-steps s) *ll-max-time*)
+    (when (>= (lunarlander-v2-steps s) *llv2-max-time*)
       (setf done t))
 
     ;; ---- 7. 每步基础惩罚 ----
     (decf reward 0.05d0)                      ; ← -0.30→-0.05
-    (incf (lunarlander-steps s))
+    (incf (lunarlander-v2-steps s))
     (values s reward done)))
 
-(defun ll-observe (s)
+(defun llv2-observe (s)
   (vt-reshape
    (vt-from-sequence
-    (list (lunarlander-x s) (lunarlander-y s)
-          (lunarlander-vx s) (lunarlander-vy s)
-          (lunarlander-theta s) (lunarlander-omega s)
-          (coerce (lunarlander-leg-left s) 'double-float)
-          (coerce (lunarlander-leg-right s) 'double-float))
+    (list (lunarlander-v2-x s) (lunarlander-v2-y s)
+          (lunarlander-v2-vx s) (lunarlander-v2-vy s)
+          (lunarlander-v2-theta s) (lunarlander-v2-omega s)
+          (coerce (lunarlander-v2-leg-left s) 'double-float)
+          (coerce (lunarlander-v2-leg-right s) 'double-float))
     :dtype :float64)
    '(1 8)))
 
 ;;; ============================================================
 ;;; 2. Replay Buffer (8 维状态，4 动作)
 ;;; ============================================================
-(defstruct (ll-buffer (:constructor %make-ll-buffer))
+(defstruct (llv2-buffer (:constructor %make-llv2-buffer))
   (capacity 0 :type fixnum) (size 0 :type fixnum) (pos 0 :type fixnum)
   (states nil) (actions nil) (rewards nil) (next-states nil) (dones nil))
 
-(defun make-ll-buffer (capacity &key (state-dim 8))
-  (%make-ll-buffer
+(defun make-llv2-buffer (capacity &key (state-dim 8))
+  (%make-llv2-buffer
    :capacity capacity :size 0 :pos 0
    :states (make-array (* capacity state-dim)
                        :element-type 'double-float :initial-element 0.0d0)
@@ -1443,24 +1459,24 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
                             :element-type 'double-float :initial-element 0.0d0)
    :dones (make-array capacity :element-type 'fixnum :initial-element 0)))
 
-(defun ll-buffer-add! (buf state action reward next-state done &key (state-dim 8))
-  (let* ((pos (ll-buffer-pos buf))
+(defun llv2-buffer-add! (buf state action reward next-state done &key (state-dim 8))
+  (let* ((pos (llv2-buffer-pos buf))
          (s-list (if (vt-p state) (vt-to-list (vt-flatten state)) state))
          (n-list (if (vt-p next-state) (vt-to-list (vt-flatten next-state)) next-state)))
     (dotimes (i state-dim)
-      (setf (aref (ll-buffer-states buf) (+ (* pos state-dim) i))
+      (setf (aref (llv2-buffer-states buf) (+ (* pos state-dim) i))
             (coerce (nth i s-list) 'double-float))
-      (setf (aref (ll-buffer-next-states buf) (+ (* pos state-dim) i))
+      (setf (aref (llv2-buffer-next-states buf) (+ (* pos state-dim) i))
             (coerce (nth i n-list) 'double-float)))
-    (setf (aref (ll-buffer-actions buf) pos) action)
-    (setf (aref (ll-buffer-rewards buf) pos) (coerce reward 'double-float))
-    (setf (aref (ll-buffer-dones buf) pos) (if done 1 0))
-    (setf (ll-buffer-pos buf) (mod (1+ pos) (ll-buffer-capacity buf)))
-    (setf (ll-buffer-size buf)
-          (min (1+ (ll-buffer-size buf)) (ll-buffer-capacity buf)))))
+    (setf (aref (llv2-buffer-actions buf) pos) action)
+    (setf (aref (llv2-buffer-rewards buf) pos) (coerce reward 'double-float))
+    (setf (aref (llv2-buffer-dones buf) pos) (if done 1 0))
+    (setf (llv2-buffer-pos buf) (mod (1+ pos) (llv2-buffer-capacity buf)))
+    (setf (llv2-buffer-size buf)
+          (min (1+ (llv2-buffer-size buf)) (llv2-buffer-capacity buf)))))
 
-(defun ll-buffer-sample (buf n &key (state-dim 8))
-  (let* ((size (ll-buffer-size buf))
+(defun llv2-buffer-sample (buf n &key (state-dim 8))
+  (let* ((size (llv2-buffer-size buf))
          (s-arr (make-array (* n state-dim) :element-type 'double-float))
          (n-arr (make-array (* n state-dim) :element-type 'double-float))
          (actions (make-array n :element-type 'fixnum))
@@ -1470,12 +1486,12 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
       (let ((idx (random size)))
         (dotimes (i state-dim)
           (setf (aref s-arr (+ (* k state-dim) i))
-                (aref (ll-buffer-states buf) (+ (* idx state-dim) i)))
+                (aref (llv2-buffer-states buf) (+ (* idx state-dim) i)))
           (setf (aref n-arr (+ (* k state-dim) i))
-                (aref (ll-buffer-next-states buf) (+ (* idx state-dim) i))))
-        (setf (aref actions k) (aref (ll-buffer-actions buf) idx))
-        (setf (aref rewards k) (aref (ll-buffer-rewards buf) idx))
-        (setf (aref dones k) (aref (ll-buffer-dones buf) idx))))
+                (aref (llv2-buffer-next-states buf) (+ (* idx state-dim) i))))
+        (setf (aref actions k) (aref (llv2-buffer-actions buf) idx))
+        (setf (aref rewards k) (aref (llv2-buffer-rewards buf) idx))
+        (setf (aref dones k) (aref (llv2-buffer-dones buf) idx))))
     (values
      (vt-reshape (vt-from-sequence (coerce s-arr 'list) :dtype :float64)
                  (list n state-dim))
@@ -1487,31 +1503,31 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
 ;;; ============================================================
 ;;; 3. Q 网络
 ;;; ============================================================
-(defun make-ll-q-net (hidden)
+(defun make-llv2-q-net (hidden)
   (let ((m (make-sequential)))
     (seq-add! m (make-dense hidden :in-dim 8 :activation :relu))
     (seq-add! m (make-dense 4 :activation :none))
     m))
 
-(defun ll-argmax (q-flat)
+(defun llv2-argmax (q-flat)
   (let ((best 0) (best-val (first q-flat)))
     (loop for v in (rest q-flat) for i from 1
           do (when (> v best-val) (setf best-val v best i)))
     best))
 
-(defun ll-greedy-action (q-net state-obs)
-  (ll-argmax (vt-to-list (vt-flatten (forward q-net state-obs)))))
+(defun llv2-greedy-action (q-net state-obs)
+  (llv2-argmax (vt-to-list (vt-flatten (forward q-net state-obs)))))
 
-(defun ll-epsilon-greedy (q-net state-obs epsilon)
-  (if (< (random 1.0d0) epsilon) (random 4) (ll-greedy-action q-net state-obs)))
+(defun llv2-epsilon-greedy (q-net state-obs epsilon)
+  (if (< (random 1.0d0) epsilon) (random 4) (llv2-greedy-action q-net state-obs)))
 
 ;;; ============================================================
 ;;; 4. DQN 更新
 ;;; ============================================================
-(defun train-one-batch-ll-dqn (q-net target-net q-opt buf batch-size gamma
+(defun train-one-batch-llv2-dqn (q-net target-net q-opt buf batch-size gamma
                                 &key (state-dim 8) (n-actions 4))
   (multiple-value-bind (states actions rewards next-states dones)
-      (ll-buffer-sample buf batch-size :state-dim state-dim)
+      (llv2-buffer-sample buf batch-size :state-dim state-dim)
     (let* ((q-next (forward target-net next-states))
            (qn-data (vt-data q-next)) (qn-off (vt-offset q-next))
            (qn-rs (first (vt-strides q-next))) (qn-cs (second (vt-strides q-next)))
@@ -1565,10 +1581,10 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
   (format t "buffer=~a  warmup=~a  target-sync=~a~%" buffer-capacity warmup-steps target-update-freq)
   (format t "epsilon: ~a → ~a over ~a steps~%~%" epsilon-start epsilon-end epsilon-decay-steps)
 
-  (let* ((q-net (make-ll-q-net hidden))
-         (target-net (make-ll-q-net hidden))
+  (let* ((q-net (make-llv2-q-net hidden))
+         (target-net (make-llv2-q-net hidden))
          (q-opt (make-adam :lr lr))
-         (buf (make-ll-buffer buffer-capacity :state-dim 8))
+         (buf (make-llv2-buffer buffer-capacity :state-dim 8))
          (total-steps 0) (learn-steps 0)
          (recent-returns '())
          (best-return -500.0d0))
@@ -1576,27 +1592,27 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
     (setf target-net (copy-network q-net))
 
     (dotimes (ep episodes)
-      (let ((state (ll-reset))
+      (let ((state (llv2-reset))
             (ep-return 0.0d0)
             (done nil))
         (loop while (not done) do
-          (let* ((obs (ll-observe state))
+          (let* ((obs (llv2-observe state))
                  (progress (min 1.0d0 (/ total-steps
                                          (coerce epsilon-decay-steps 'double-float))))
                  (epsilon (+ epsilon-start (* progress (- epsilon-end epsilon-start))))
-                 (action (ll-epsilon-greedy q-net obs epsilon)))
-            (multiple-value-bind (next reward done-p) (ll-step state action)
-              (ll-buffer-add! buf obs action reward (ll-observe next) done-p)
+                 (action (llv2-epsilon-greedy q-net obs epsilon)))
+            (multiple-value-bind (next reward done-p) (llv2-step state action)
+              (llv2-buffer-add! buf obs action reward (llv2-observe next) done-p)
               (incf ep-return reward)
               (incf total-steps)
               (setf state next done done-p)))
 
-          (when (and (>= (ll-buffer-size buf) warmup-steps)
+          (when (and (>= (llv2-buffer-size buf) warmup-steps)
                      (zerop (mod total-steps learn-every)))
-            (train-one-batch-ll-dqn q-net target-net q-opt buf batch-size gamma)
+            (train-one-batch-llv2-dqn q-net target-net q-opt buf batch-size gamma)
             (incf learn-steps))
 
-          (when (and (>= (ll-buffer-size buf) warmup-steps)
+          (when (and (>= (llv2-buffer-size buf) warmup-steps)
                      (zerop (mod total-steps target-update-freq)))
             (setf target-net (copy-network q-net))))
 
@@ -1616,13 +1632,13 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
     (format t "~%测试 20 回合（贪心）...~%")
     (let ((test-returns '()))
       (dotimes (i 20)
-        (let ((state (ll-reset))
+        (let ((state (llv2-reset))
               (done nil)
               (total 0.0d0))
           (loop while (not done) do
-            (let* ((obs (ll-observe state))
-                   (action (ll-greedy-action q-net obs)))
-              (multiple-value-bind (next reward done-p) (ll-step state action)
+            (let* ((obs (llv2-observe state))
+                   (action (llv2-greedy-action q-net obs)))
+              (multiple-value-bind (next reward done-p) (llv2-step state action)
                 (incf total reward)
                 (setf state next done done-p))))
           (push total test-returns)))
@@ -1657,8 +1673,8 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
 ;;;;   - 两个网络独立 forward/backward/optimizer-step
 ;;;;   - 每个 iteration：收集 1 个 episode，计算 GAE，做 K 个 epoch 更新
 ;;;;
-;;;; 前置：cartpole-reinforce-v3.lisp 已加载
-;;;; 用法：(in-package :nn) (load "cartpole-ppo.lisp") (train-ppo)
+;;;; 前置：同文件内的 REINFORCE 段（复用环境）
+;;;; 用法：(train-ppo)
 
 (in-package :nn)
 
@@ -1988,8 +2004,8 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
 ;;;;   2. 主训练里 epoch 循环加 KL 早停（超阈值提前 break）
 ;;;;   3. 默认参数：episodes/iter 20→50, epochs/iter 10→4, lr 3e-4→1e-4
 ;;;;
-;;;; 前置：cartpole-reinforce-v3.lisp 已加载
-;;;; 用法：(in-package :nn) (load "cartpole-ppo-v3.lisp") (train-ppo-v3)
+;;;; 前置：同文件内的 REINFORCE 段（复用环境）
+;;;; 用法：(train-ppo-v3)
 
 (in-package :nn)
 

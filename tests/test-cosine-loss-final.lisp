@@ -1,3 +1,15 @@
+;;;; test-cosine-loss-final.lisp
+;;;;
+;;;; cosine-similarity-loss 梯度验证：解析梯度 vs 中心有限差分。
+;;;; 大梯度用相对误差、小梯度用绝对误差，避免极值点上的 FD 噪声。
+;;;;
+;;;; 用法（需先加载系统）:
+;;;;   sbcl --dynamic-space-size 4096 --non-interactive \
+;;;;        --eval '(require :asdf)' --eval '(asdf:load-system :clnn)' \
+;;;;        --load tests/test-cosine-loss-final.lisp
+;;;;
+;;;; 加载即执行。
+
 (in-package #:nn)
 
 ;; ============================================================
@@ -176,4 +188,6 @@
   (format t "============================================~%")
   (= *passed* *total*))
 
-(main)
+(let ((ok (main)))
+  ;;; 统一的 CI 退出码：存在失败项时以非 0 退出（仅测试脚本使用）
+  #+sbcl (unless ok (sb-ext:exit :code 1)))

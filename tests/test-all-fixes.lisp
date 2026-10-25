@@ -1,4 +1,13 @@
-;;;; 所有关键 Bug 修复验证（基于真实工作区 API）
+;;;; test-all-fixes.lisp
+;;;;
+;;;; 历史关键缺陷修复的汇总验证（27 项）：损失下降、梯度有限性、
+;;;; seq-add! 顺序、参数量估算等。
+;;;;
+;;;; 用法:
+;;;;   sbcl --dynamic-space-size 4096 --non-interactive \
+;;;;        --load tests/test-all-fixes.lisp
+;;;;
+;;;; 加载即执行。
 (in-package #:cl-user)
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (ql:quickload :clnn))
@@ -174,3 +183,6 @@
   (ck "seq-add! preserves order (5 layers)" (= (length (seq-layers m)) 5)))
 
 (format t "~%========== Summary: ~a passed, ~a failed ==========~%" *pass* *fail*)
+
+;;; 统一的 CI 退出码：存在失败项时以非 0 退出（仅测试脚本使用）
+#+sbcl (when (plusp *fail*) (sb-ext:exit :code 1))

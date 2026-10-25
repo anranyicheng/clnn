@@ -1,3 +1,18 @@
+;;;; test-copy-network.lisp
+;;;;
+;;;; COPY-NETWORK 深拷贝测试。
+;;;;
+;;;; 校验每种层拷贝后的配置保真（激活类型、dropout 概率、卷积超参、
+;;;; 归一化超参、嵌入维度等）、参数值逐位一致、底层张量不共享，
+;;;; 以及 trainable 标志被继承。
+;;;;
+;;;; 用法（需先加载系统）:
+;;;;   sbcl --dynamic-space-size 4096 --non-interactive \
+;;;;        --eval '(require :asdf)' --eval '(asdf:load-system :clnn)' \
+;;;;        --load tests/test-copy-network.lisp
+;;;;
+;;;; 加载即执行，末尾打印 "copy-network 测试: N PASS, M FAIL"。
+
 (in-package :clnn)
 
 (defun test-copy-network ()
@@ -109,4 +124,7 @@
       (format t "~%copy-network 测试: ~d PASS, ~d FAIL~%" pass fail)
       (values pass fail))))
 
-(test-copy-network)
+(multiple-value-bind (pass fail) (test-copy-network)
+  (declare (ignore pass))
+  ;;; 统一的 CI 退出码：存在失败项时以非 0 退出（仅测试脚本使用）
+  #+sbcl (when (plusp fail) (sb-ext:exit :code 1)))

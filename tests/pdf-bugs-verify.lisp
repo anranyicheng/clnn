@@ -1,5 +1,14 @@
-;;;; bug-verification.lisp
-;;;; 精简后的回归测试：只保留断言明确、可复现的用例。
+;;;; pdf-bugs-verify.lisp
+;;;;
+;;;; 早期缺陷报告（PDF）中可复现条目的验证测试：只保留断言明确、
+;;;; 与实现无关的用例，共 7 项。
+;;;;
+;;;; 用法（需先加载系统）:
+;;;;   sbcl --dynamic-space-size 4096 --non-interactive \
+;;;;        --eval '(require :asdf)' --eval '(asdf:load-system :clnn)' \
+;;;;        --load tests/pdf-bugs-verify.lisp
+;;;;
+;;;; 加载即执行，末尾打印 "通过: N / 失败: M"。
 
 (in-package #:nn)
 
@@ -171,3 +180,6 @@
 (format t "~%~%=== 总结 ===~%")
 (format t "  通过: ~a~%" *vpass*)
 (format t "  失败: ~a~%" *vfail*)
+
+;;; 统一的 CI 退出码：存在失败项时以非 0 退出（仅测试脚本使用）
+#+sbcl (when (plusp *vfail*) (sb-ext:exit :code 1))

@@ -125,35 +125,59 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
 示例
 --------------------------------------------------------------------------------
 
-库附带多个端到端示例，覆盖不同架构与任务类型：
+`examples/` 下的每个文件都是一个独立可运行的脚本，同时充当相应架构的
+最小参考实现。加载脚本即开始训练（部分脚本耗时较长，见下表）：
 
-  MNIST 手写数字分类            Dense 网络与小型 CNN
-  ResNet-9                     残差容器 + BatchNorm + 全局池化 + SGD + 余弦调度
-  Transformer 序列分类          嵌入 + 位置编码 + Transformer Block + 分类头
-  RNN / LSTM / GRU 复制任务     循环网络的多种变体与序列包装层
-  强化学习（CartPole）          REINFORCE / A2C / DQN / PPO
-  强化学习（MountainCar）       DQN（稀疏奖励场景）
-  强化学习（LunarLander）       DQN（连续状态、多动作场景）
+  文件                              内容                                        耗时
+  ────────────────────────────────  ──────────────────────────────────────────  ──────
+  examples/mnist.lisp               MNIST 数据加载器 + 两个全连接基线          数分钟
+  examples/resnet9-mnist-lite.lisp  ResNet-9 mini on MNIST（内存 < 300 MB）    数分钟
+  examples/resnet9-cifar.lisp       ResNet-9 mini on CIFAR-10                  长
+  examples/transformer-sum-classifier.lisp  Transformer 序列分类（判断序列和）  长
+  examples/cartpole-reinforce.lisp  强化学习合集：REINFORCE / A2C / DQN / PPO   仅定义
+  examples/prove.lisp               逐层正确性演示（例 1 ~ 例 10）              数秒
+  examples/demo-last-bit-final.lisp LSTM 记忆最后一位                         数秒
+  examples/conv2d-batched.lisp      批量 matmul 卷积的实现与基准对比            数秒
+  examples/dac-mnist.lisp           DAC 深度自适应聚类                          长
+  examples/binocular-mnist.lisp     仿生双眼（周边视觉 + 中央凹 + 视差）MNIST    长
 
-每个示例都是一个独立可运行的脚本，同时充当相应架构的最小参考实现。
+注：`examples/cartpole-reinforce.lisp` 只做定义、不自动训练，需要手动
+调用 `(train-reinforce …)` / `(train-dqn)` / `(train-ppo)` 等入口
+（文件头部列出了全部 9 个入口）。
+
+部分示例需要 `chipz`（解压 `.gz`）与本地 MNIST / CIFAR 数据。
 
 
 测试
 --------------------------------------------------------------------------------
 
-库附带完整的回归测试套件，覆盖：
+`tests/` 下只放测试，全部带有断言，可以用一个脚本跑完：
 
-  * 历史 bug 的回归测试（含 stop-gradient、BatchNorm 边界、LSTM 初始状态
-    梯度、KL 散度梯度、参数量估算、注意力偏置统计等）
-  * 数值梯度对拍测试（SDPA、MHA、LSTM、GRU、Embedding、Conv2d、各类池化）
-  * 优化器逐步数值验证（SGD / Momentum / Nesterov / Adagrad / RMSprop / AdamW）
-  * 调度器精确值序列验证
-  * 序列化往返测试与集成测试（loss 下降、准确率、保存加载一致性）
+    cd tests && ./run-tests.sh            # 全部（约 1.5 分钟）
+    cd tests && ./run-tests.sh --fast     # 只跑快速套件（约 20 秒）
+    cd tests && ./run-tests.sh test-architectures pdf-bugs-verify   # 指定文件
 
-此外还包含：
+所有测试文件在存在失败项时都会以非 0 退出，因此可以直接接到 CI。
 
-  * 架构级压力测试（多分支、残差、注意力路由、深层网络等）
-  * 端到端训练用例（多种损失函数与架构组合下的收敛验证）
+  test-architecture-fixes.lisp  架构审查缺陷的逐条回归（43 项）
+  clnn-test-suite.lisp          主回归套件（26 项）
+  test-regression-fixes.lisp    带缺陷编号的回归（26 项）
+  test-copy-network.lisp        深拷贝保真（21 项）
+  gradcheck-all-layers.lisp     全层/全损失 解析梯度 vs 中心差分
+  test-architectures.lisp       架构级集成测试（CNN/LSTM/Transformer/…，14 组）
+  test-end-to-end-training.lisp 端到端训练收敛（16 个用例）
+  test-all-fixes.lisp           历史缺陷修复汇总（27 项）
+  audit-verify.lisp             历史审查条目验证（11 项）
+  pdf-bugs-verify.lisp          早期缺陷报告条目验证（7 项）
+  test-cache-slots.lisp         前向缓存清理契约
+  test-cosine-loss-final.lisp   cosine 损失梯度对拍
+  smoke-mnist-convergence.lisp  真实 MNIST 上的收敛冒烟（需 chipz，约 1 分钟）
+
+覆盖范围包括：历史 bug 回归（stop-gradient、BatchNorm 边界、LSTM 初始
+状态梯度、KL 散度梯度、参数量估算、注意力偏置统计等）、数值梯度对拍
+（SDPA / MHA / LSTM / GRU / Embedding / Conv2d / 各类池化）、优化器逐步
+数值验证（SGD / Momentum / Nesterov / Adagrad / RMSprop / AdamW）、
+调度器精确值序列、序列化往返，以及架构级压力测试与端到端收敛验证。
 
 
 性能与资源
@@ -222,22 +246,27 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
 项目结构
 --------------------------------------------------------------------------------
 
-  包定义与导出
-  协议与基类
-  初始化器
+  包定义与导出              nn-package.lisp
+  协议与基类                nn-protocol.lisp
+  初始化器                  nn-initializer.lisp
   Dense / Activation / Flatten / Residual
+                            nn-layers-dense.lisp
   Conv2d / 各类池化 / im2col
+                            nn-layers-conv.lisp
   Dropout / BatchNorm / LayerNorm
-  Embedding
-  注意力与 Transformer
+                            nn-layers-norm.lisp
+  Embedding                 nn-layers-embedding.lisp
+  注意力与 Transformer      nn-layers-attention.lisp
   RNN / LSTM / GRU / 序列包装
-  损失函数
-  优化器
-  学习率调度器
+                            nn-layers-rnn.lisp
+  损失函数                  nn-loss.lisp
+  优化器                    nn-optimizer.lisp
+  学习率调度器              nn-scheduler.lisp
   Sequential / 序列化 / 深拷贝
-  示例目录
-  测试目录
-  探索性代码目录
+                            nn-model.lisp
+  示例（可运行脚本）        examples/
+  测试（全部带断言）        tests/        入口 tests/run-tests.sh
+  变更记录                  CHANGELOG.md
 
 
 常见问题
@@ -287,124 +316,21 @@ clvt 的过程中耗尽：
 clvt 预编译完成后，后续加载 clnn 在默认堆下即可完成。
 
 
-架构审查修复记录（2026-10）
+变更记录
 --------------------------------------------------------------------------------
 
-以下问题均由可复现的测试定位，修复后都有对应的回归测试
-（`tests/test-architecture-fixes.lisp`）。
+  各类缺陷修复、性能改进与行为变更的完整记录见 CHANGELOG.md。
 
-安全
-~~~~
+  当前版本的关键修复（2026-10）：
 
-* `load-model` 未禁用 `*read-eval*`
-  模型文件是纯数据 plist，但 `read` 默认允许 `#.` 读宏求值。
-  恶意的 "模型文件" 中的 `#.(...)` 会在加载阶段被求值，等价于
-  任意代码执行；实测可以读写任意文件、启动外部进程。
-  修复：`load-model` 内绑定 `*read-eval*` 为 `NIL`。
+    * 安全    load-model 未禁用 *read-eval*，模型文件可执行任意代码
+    * 性能    ce-loss 用 (vt-eye C) 构造 one-hot，C=50000 时申请 20 GB 崩溃
+    * 性能    embedding 的 max-norm 每次前向重归一化整表（O(V·D)）
+    * 正确性  batch-norm 推理态反向梯度用错公式
+    * 正确性  copy-network 丢弃 trainable / 优化器 params-grads 静默错位
+    * 架构    协议泛型声明在最后加载的文件，加载顺序倒置
 
-性能
-~~~~
-
-* `ce-loss` 用 `(vt-eye C)` + `vt-take` 构造 one-hot
-
-  每次 `compute-loss` / `compute-loss-gradient` 都要分配一个
-  C×C 的双精度单位矩阵。C=4000 时单次 122 MB、13 ms；
-  C=50000 时单次申请 **20 GB**，进程直接 OOM 崩溃。
-  修复：按 `(batch, C)` 直接填充 `off` / `on` 两个常数，
-  复杂度 O(batch×C)，且 label smoothing 与 one-hot 共用一次分配。
-
-  | 类别数 C | 修复前单次耗时 | 修复后 |
-  |---------:|---------------:|-------:|
-  |    1 000 |          4 ms  |   1 ms |
-  |    4 000 |         13 ms  |   6 ms |
-  |   50 000 | 申请 20 GB，崩溃 | 38 ms |
-
-* `embedding` 的 `max-norm` 每次前向重归一化整张词表
-
-  旧实现对 (V, D) 表逐元素调用 `vt-ref`，复杂度 O(V·D)：V=50000、D=64
-  时即使只取 4 个索引，单次前向也要 71 ms，且与 batch 无关地随词表线性增长。
-  同时它也不符合 PyTorch 语义（PyTorch 只重归一化本次用到的行）。
-  修复：新增 `renorm-embedding-rows!`，只处理本次引用到的唯一行，
-  行范数用一次向量化 `vt-sum` 算出；无超限行时连 (V,) 向量都不分配。
-  保留 `renorm-embedding-weights!` 作为显式的全表整理工具（同样已向量化）。
-
-  | 词表 V / 维度 D | 修复前 | 修复后 |
-  |----------------:|-------:|-------:|
-  |     1 000 / 16  | 0.35 ms | < 0.05 ms |
-  |    10 000 / 32  | 6.6 ms  | < 0.05 ms |
-  |    50 000 / 64  | 71 ms   | < 0.05 ms |
-
-* `rmsprop` 每一步为每个参数分配一次 `vt-zeros`
-  `(gethash key registry (vt-zeros ...))` 的默认值是函数实参，即使键存在
-  也会先分配一个参数规模的零张量再丢弃。改为 `or` + `setf` 惰性创建。
-
-* `global-avg-pool2d` 反向多分配一份满尺寸常量
-  旧实现用 `vt-const` 造一个 (B,C,H,W) 全 1 张量参与相乘。改为对
-  (B,C,1,1) 缩放后经 `vt-broadcast-to` 物化，只保留梯度本身这一份内存。
-
-正确性
-~~~~~~
-
-* `copy-network` 丢失 `trainable`
-  `sequential` / `activation-layer` / `flatten` / `dropout` / `residual`
-  的拷贝分支没有把 `trainable` 传下去，冻结层复制后会变回可训练
-  （`sequential` 甚至会从 NIL 变回 T）。已为相关构造函数补上
-  `:trainable` 关键字并在拷贝时传递。
-
-* `batch-norm` 推理态的反向梯度是错的
-  两处缺陷叠加：推理前向不写 `xhat` / `std-inv` 缓存（反向会读到
-  上一轮训练残留的值），且反向无条件套用训练态公式（减均值项）。
-  推理态下均值/方差来自滑动统计量、与输入无关，
-  正确结果是 `dx = dxhat · std_inv`。
-  修复：用 `bn-fwd-mode` 记录本次前向用的是批统计量还是滑动统计量，
-  反向按模式选择公式。已用有限差分验证。
-
-* `build-model` 不初始化 `rnn-sequence` 内部的 cell
-  `collect-all-layers` 把 `rnn-sequence` 当作叶子返回，但 `typecase`
-  没有对应分支，导致 `build-model` 之后 `param-count` 仍是 0。
-  已补上分支，对内部 cell 调用 `ensure-rnn-cell-params`。
-
-* `embedding` 关闭 `max-norm` 后残留缩放系数
-  `norm-scale` 只在启用时写入，关闭后旧值仍在，反向会拿陈旧系数缩放梯度。
-  现在 `max-norm` 为 NIL 时显式清空。
-
-* 优化器对 `params` / `grads` 长度不一致静默截断
-  `optimizer-step` 按位置配对两个列表，长度不同时 `loop` 在较短的
-  列表结束时静默退出——后半部分参数永远不更新且无任何提示。
-  现在所有优化器在更新前校验长度并给出明确错误。
-
-* `tensor-one-hot` 不支持多维索引
-  对 (batch, seq) 形式的 token id 会报「索引数量与维度数不匹配」。
-  现在先展平索引，并对越界索引报错。
-
-架构
-~~~~
-
-* 协议泛型声明位置错误
-  `zero-grad-children` / `zero-grad!` / `transient-cache-slots` /
-  `clear-forward-cache!` / `clear-step-caches!` 原本声明在最后加载的
-  `nn-model.lisp`，而 `nn-layers-attention.lisp` 更早就为
-  `zero-grad-children` 定义了方法。这既触发 SBCL 的
-  "redefining ... in DEFGENERIC" 告警，也违反了
-  「协议层必须最先加载」的约定（一旦 `nn-model.lisp` 加载失败，
-  就会留下一个没有默认方法的残缺泛型）。
-  已把这些声明前移到 `nn-protocol.lisp`。
-
-验证
-~~~~
-
-    # 架构修复专项测试（43 项）
-    sbcl --dynamic-space-size 4096 --non-interactive \
-         --load tests/test-architecture-fixes.lisp
-
-    # 既有回归套件
-    sbcl --dynamic-space-size 4096 --non-interactive \
-         --load tests/clnn-test-suite.lisp
-
-除上述修复外，还对全部层与损失函数做了数值梯度对拍（有限差分），
-覆盖 dense 的 11 种激活、conv2d 的 5 种 stride/padding 组合、三种池化、
-batch-norm 的 2D/ND/无仿射、layer-norm、SDPA/MHA、transformer-block、
-残差、LSTM/GRU/rnn-sequence、embedding，以及 7 类损失的三种归约方式，
-解析梯度与数值梯度全部一致。
+  每一条都在 CHANGELOG.md 中给出了现象、成因、修复与修复前后的量化对比，
+  并配有 tests/ 下可复现的回归测试。
 
 ================================================================================

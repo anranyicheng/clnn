@@ -1,3 +1,18 @@
+;;;; test-cache-slots.lisp
+;;;;
+;;;; 前向缓存清理契约测试。
+;;;;
+;;;; 校验 CLEAR-FORWARD-CACHE! 与 CLEAR-STEP-CACHES! 的边界：
+;;;; 前者可在任意时刻调用（默认只清 transient-cache-slots，即空操作），
+;;;; 后者只能在一次完整 forward + backward 之后调用。
+;;;; 同时校验 15 类层的 CACHE-SLOTS / GRAD-SLOTS 声明与实际持有缓存一致。
+;;;;
+;;;; 用法（需先加载系统）:
+;;;;   sbcl --dynamic-space-size 4096 --non-interactive \
+;;;;        --eval '(require :asdf)' --eval '(asdf:load-system :clnn)' \
+;;;;        --load tests/test-cache-slots.lisp
+;;;;
+;;;; 加载即执行；任何断言失败都会抛错使进程以非 0 退出。
 
 (in-package :clnn)
 

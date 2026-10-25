@@ -4,7 +4,7 @@
 ;;;; 参考：Chang et al., "Deep Adaptive Image Clustering", ICCV 2017
 ;;;;
 ;;;; 用法：
-;;;;   (load "dac-mnist.lisp")
+;;;;   (load "examples/dac-mnist.lisp")
 ;;;;   (dac-mnist-simple)              ; ★ 推荐：AE + KMeans，稳定 ~59%
 ;;;;   (dac-mnist-final :seed 10)      ; DAC 微调（可复现），~60%
 ;;;;

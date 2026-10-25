@@ -9,7 +9,7 @@
 ;;;;
 ;;;; 用法：
 ;;;;   (in-package :nn)
-;;;;   (load "resnet9-mnist-tiny.lisp")
+;;;;   (load "examples/resnet9-mnist-lite.lisp")
 ;;;;   (train-resnet9-tiny)
 
 (eval-when (:compile-toplevel :load-toplevel :execute)

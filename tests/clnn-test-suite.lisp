@@ -764,3 +764,6 @@
 
 
 (run-all-tests)
+
+;;; 统一的 CI 退出码：存在失败项时以非 0 退出（仅测试脚本使用）
+#+sbcl (when (plusp *test-fail*) (sb-ext:exit :code 1))
