@@ -153,7 +153,7 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
 
 `tests/` 下只放测试，全部带有断言，可以用一个脚本跑完：
 
-    cd tests && ./run-tests.sh            # 全部（约 1.5 分钟）
+    cd tests && ./run-tests.sh            # 全部 14 个文件（约 65 秒）
     cd tests && ./run-tests.sh --fast     # 只跑快速套件（约 20 秒）
     cd tests && ./run-tests.sh test-architectures pdf-bugs-verify   # 指定文件
 
@@ -170,6 +170,7 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
   audit-verify.lisp             历史审查条目验证（11 项）
   pdf-bugs-verify.lisp          早期缺陷报告条目验证（7 项）
   test-cache-slots.lisp         前向缓存清理契约
+  test-conv-im2col.lisp         im2col/col2im/conv2d 与朴素参考实现逐元素对拍
   test-cosine-loss-final.lisp   cosine 损失梯度对拍
   smoke-mnist-convergence.lisp  真实 MNIST 上的收敛冒烟（需 chipz，约 1 分钟）
 
@@ -187,20 +188,31 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
 
   * 二维矩阵乘法使用 SIMD 加速内核
   * 高维（批量）矩阵乘法使用 SIMD 与多线程加速
-  * 卷积的 im2col / col2im 采用预计算偏移与去泛型分发
+  * 卷积的 im2col / col2im 做「内部区快路径 + 跨边界慢路径」分离，
+    行基址预计算，内层只剩基址加法（该步 45.7 → 19.0 ms）
+  * 池化去掉逐元素闭包调用，改「每通道基址 + 行偏移」；
+    avg-pool 反向复用前向缓存的有效元素计数表（前向 34.3 → 8.3 ms）
+  * 损失函数的一次性目标分布构造（one-hot 从 O(C²) 降为 O(batch×C)）
+  * 嵌入层的 max-norm 只处理本次用到的行（O(V·D) → O(unique×D)）
 
 已知瓶颈
 
-  卷积是纯 Lisp 实现的物理瓶颈。im2col 的操作量正比于
-  批大小 × 空间尺寸 × 输入通道 × 卷积核面积，无法通过语言层面
-  的优化绕开。同样的算法在有 BLAS 支持的环境下会快一个数量级，
-  但在纯 Lisp 中这是语言本身的极限。
+  1. 矩阵乘法。conv2d / dense 的时间现在基本全部落在 vt-matmul 上，
+     而它实测只有 2.2~2.8 GMAC/s（本机 AVX2+FMA 的标量 FMA 循环即可达
+     4.9 GMAC/s）。瓶颈在 clvt 的 GEMM 分块结构（k 维在最内层，C 分块
+     反复读-改-写，属带宽受限）。改成经典的「i 分块 + C 常驻寄存器」
+     预期 2~4 倍，这是当前最大的一处剩余空间，但属于 clvt 的改动。
+
+  2. im2col 的内存占用正比于
+     批大小 × 空间尺寸 × 输入通道 × 卷积核面积，
+     这是算法本身的开销。同样的算法在有 BLAS 支持的环境下会快一个数量级。
 
 进一步的加速途径
 
-  * 减少数据量或缩减模型规模
+  * 修 clvt 的 GEMM 分块（收益最大，见上）
   * 通过外部函数接口调用 BLAS 库（尚未实现）
   * 使用 GPU 后端（尚未实现）
+  * 减少数据量或缩减模型规模
 
 内存优化准则
 

@@ -26,6 +26,7 @@ FAST_TESTS=(
   test-regression-fixes
   test-copy-network
   test-cache-slots
+  test-conv-im2col
   test-cosine-loss-final
   test-all-fixes
   pdf-bugs-verify
