@@ -84,11 +84,13 @@
         (error "~a: logits 形状 ~a 含空维度" loss-name shape))
       (values batch n-classes))))
 
-(defun %ce-target (target batch n-classes smoothing)
+(defun %ce-target (target batch n-classes smoothing &optional (dtype :float64))
   "把整数标签构造为 (batch, n-classes) 的目标分布，只分配一次 batch×n-classes。
 
    SMOOTHING = 0        -> one-hot
    SMOOTHING = s > 0    -> (1-s)·one-hot + s/n 的均匀分布
+   DTYPE 跟随 logits：梯度 = softmax − target，两者 dtype 不一致时
+   (VT-- PROBS TARGET) 会把 f32 的梯度整体提升成 f64（G-7）。
 
    历史实现用 (vt-eye n-classes) + vt-take 取 one-hot，每次调用都要分配
    n-classes×n-classes 的临时单位矩阵：4000 类时单次 122 MB、23 ms，
@@ -97,6 +99,13 @@
                    target
                    (vt-flatten target)))
          (n-total (vt-size flat)))
+    ;; 标签 dtype 契约（契约文档 §10.2）：必须是整数。
+    ;; 历史实现的失败点是 (coerce (vt-ref …) 'fixnum) —— 浮点标签报
+    ;; "0.5d0 can't be converted to type FIXNUM"，布尔标签报
+    ;; "T can't be converted to type FIXNUM"，复数标签报
+    ;; "The value #C(1 0) is not of type REAL"：三处都在写了一半目标分布
+    ;; 之后才炸，且文案不指向「标签」。
+    (assert-index-dtype flat "ce-loss: 标签")
     (when (< n-total batch)
       (error "ce-loss: 标签数量 (~a) 少于 batch (~a)" n-total batch))
     ;; 先整体校验，避免写一半才报错
@@ -105,15 +114,24 @@
         (unless (<= 0 idx (1- n-classes))
           (error "ce-loss: 第 ~a 个标签 ~a 超出类别范围 [0, ~a)"
                  i idx (1- n-classes)))))
-    (let* ((smoothing (coerce smoothing 'double-float))
+    (let* (;; LOGITS 已被 COMPUTE-LOSS 的 :AROUND 闸门规约到计算域，所以
+           ;; DTYPE 恒为 :float64、ELEM-TYPE 恒为 DOUBLE-FLOAT。保留这条推导
+           ;; （而不是硬写 double-float）是为了让「目标分布跟随 logits 的精度」
+           ;; 这个不变量显式可见 —— 单一计算域下它退化为恒等，但语义由它承载。
+           (dtype (value-float-dtype dtype))
+           (elem-type (if (eq dtype :float32) 'single-float 'double-float))
+           (smoothing (coerce smoothing 'double-float))
            (off (if (plusp smoothing)
                     (/ smoothing (coerce n-classes 'double-float))
                     0.0d0))
            ;; 目标分布 = (1-s)·one-hot + s/n 的均匀分布：
            ;;   非标签位置 = s/n；标签位置 = (1-s) + s/n
-           (on (+ (- 1.0d0 smoothing) off))
+           ;; 先按 double 算常数再降到目标类型：s/n 在 f32 下直接算会掉位，
+           ;; 而常数只算两个，多一步 coerce 不影响 O(batch×n-classes) 的分配。
+           (on (coerce (+ (- 1.0d0 smoothing) off) elem-type))
+           (off (coerce off elem-type))
            (data (make-array (* batch n-classes)
-                             :element-type 'double-float
+                             :element-type elem-type
                              :initial-element off)))
       (dotimes (i batch)
         (setf (aref data (+ (* i n-classes)
@@ -133,7 +151,8 @@
            (log-sum-exp (vt-log sum-exp))
            (log-probs (vt-- shifted log-sum-exp))
            (target-dist (%ce-target target batch n-classes
-                                    (ce-label-smoothing l)))
+                                    (ce-label-smoothing l)
+                                    (vt-dtype predicted)))
            (per-sample (vt-scale
                         (vt-sum (vt-* target-dist log-probs) :axis -1)
                         -1.0d0)))
@@ -153,7 +172,8 @@ softmax = exp-s / sum-exp（无 eps），梯度每行和精确为 0，与 PyTorc
            (sum-exp (vt-sum exp-s :axis 1 :keepdims t))
            (probs (vt-/ exp-s sum-exp))
            (target-dist (%ce-target target batch n-classes
-                                    (ce-label-smoothing l)))
+                                    (ce-label-smoothing l)
+                                    (vt-dtype predicted)))
            (grad (vt-- probs target-dist)))
       (ecase (loss-reduction l)
         (:mean (vt-scale grad (/ 1.0d0 batch)))

@@ -18,6 +18,7 @@
    :vt-ones
    :vt-ones-like
    :vt-zeros-like
+   :vt-fill
    :vt-const
    :vt-arange
    :vt-random
@@ -225,6 +226,7 @@
    ;; ============= 此前遗漏的公共 API（P2-3）=============
    ;; 训练/推理模式
    :set-global-training! :set-model-training! :layer-training
+   :train! :eval!
    ;; 模型构建与缓存管理
    :build-model :clear-forward-cache! :clear-all-gradients!
    ;; 序列 RNN 包装层（此前完全不可达）
@@ -233,6 +235,7 @@
    :compute-loss :compute-loss-gradient :loss-name :loss-reduction
    :optimizer-lr :optimizer-grad-clip :optimizer-weight-decay
    :optimizer-step-count :optimizer-state-registry :optimizer-step
+   :with-optimizer-step :optimizer-step-number
    :scheduler-optimizer :scheduler-last-lr :scheduler-step-count
    ;; 层访问器
    :dense-in-dim :dense-out-dim :dense-weights :dense-bias

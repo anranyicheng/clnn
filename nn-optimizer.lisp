@@ -1,5 +1,18 @@
 (in-package #:nn)
 
+;;; ------------------------------------------------------------------
+;;; 优化器状态张量的 dtype 契约
+;;; ------------------------------------------------------------------
+;;; 所有优化器状态（动量 / 一阶矩 / 二阶矩 / vmax / adagrad 累加器 / rmsprop
+;;; 缓冲）都用 (VT-ZEROS-LIKE PARAM) 惰性创建，**继承参数的 dtype**。
+;;;
+;;; 不能写成 (VT-ZEROS (VT-SHAPE PARAM))：clvt 的 VT-ZEROS 缺省 dtype 是
+;;; :float64，于是非 f64 模型在第一次 optimizer-step 里就会被
+;;;     state(float64) ⊔ grad(窄 dtype) → float64
+;;; 静默提升，`(funcall setter new-p)` 把参数换成 f64 新对象，之后前向/反向
+;;; 全部变成双精度、显存与算力翻倍，而且没有任何告警 ——「模型越训越慢、
+;;; dtype 自己变了」。ZEROS-LIKE 只改变继承方向，f64 模型下与旧写法逐位等价。
+
 (defun clip-gradient (grad clip)
   "对【单个】梯度张量做 L2 裁剪。
    注意：优化器的 grad-clip 语义已改为全局范数裁剪（见 GLOBAL-CLIP-COEFF），
@@ -104,7 +117,7 @@
                                  g))
                       (buf (or (gethash base-key registry)
 			       (setf (gethash base-key registry)
-                                     (vt-zeros (vt-shape param)))))
+                                     (vt-zeros-like param))))
                       (new-buf (vt-+ (vt-scale buf mu) g-reg)))
                  (setf (gethash base-key registry) new-buf)
                  (let ((update (if (sgd-nesterov-p opt)
@@ -154,7 +167,7 @@
         (wd (optimizer-weight-decay opt))
         (clip (optimizer-grad-clip opt))
         (clip-coeff (global-clip-coeff grad-list clip))
-        (tt (incf (optimizer-step-count opt)))
+        (tt (optimizer-step-number opt))
         (registry (optimizer-state-registry opt)))
     (assert-param-grad-alignment opt param-list grad-list)
     (loop for p in param-list
@@ -177,7 +190,7 @@
 		 ;; 一阶矩
 		 (let ((m (or (gethash key-m registry)
                               (setf (gethash key-m registry)
-				    (vt-zeros (vt-shape param))))))
+				    (vt-zeros-like param)))))
                    (setf (gethash key-m registry)
 			 (vt-+ (vt-scale m b1)
                                (vt-scale g-reg
@@ -185,7 +198,7 @@
 		 ;; 二阶矩
 		 (let ((v (or (gethash key-v registry)
                               (setf (gethash key-v registry)
-				    (vt-zeros (vt-shape param))))))
+				    (vt-zeros-like param)))))
                    (setf (gethash key-v registry)
 			 (vt-+ (vt-scale v b2)
                                (vt-scale (vt-square g-reg)
@@ -200,7 +213,7 @@
 
 			      (let* ((v-max-old (or (gethash key-vmax registry)
 						    (setf (gethash key-vmax registry)
-							  (vt-zeros (vt-shape param)))))
+							  (vt-zeros-like param))))
 				     (v-max (vt-map #'max v-max-old v-hat)))
 				(setf (gethash key-vmax registry) v-max)
 				(vt-- param
@@ -238,7 +251,7 @@
         (wd (optimizer-weight-decay opt))
         (clip (optimizer-grad-clip opt))
         (clip-coeff (global-clip-coeff grad-list clip))
-        (tt (incf (optimizer-step-count opt)))
+        (tt (optimizer-step-number opt))
         (registry (optimizer-state-registry opt)))
     (assert-param-grad-alignment opt param-list grad-list)
     (loop for p in param-list
@@ -257,7 +270,7 @@
 		 ;; 一阶矩 (无 wd)
 		 (let ((m (or (gethash key-m registry)
                               (setf (gethash key-m registry)
-				    (vt-zeros (vt-shape param))))))
+				    (vt-zeros-like param)))))
                    (setf (gethash key-m registry)
 			 (vt-+ (vt-scale m b1)
                                (vt-scale g
@@ -265,7 +278,7 @@
 		 ;; 二阶矩 (无 wd)
 		 (let ((v (or (gethash key-v registry)
 			      (setf (gethash key-v registry)
-                                    (vt-zeros (vt-shape param))))))
+                                    (vt-zeros-like param)))))
                    (setf (gethash key-v registry)
 			 (vt-+ (vt-scale v b2)
                                (vt-scale (vt-square g)
@@ -337,7 +350,7 @@
                       (sq (vt-square g-reg))
                       (v (or (gethash key-v registry)
                              (setf (gethash key-v registry)
-				   (vt-zeros (vt-shape param))))))
+				   (vt-zeros-like param)))))
 		 ;; 更新平方梯度移动平均
 		 (setf (gethash key-v registry)
                        (vt-+ (vt-scale v alpha)
@@ -347,7 +360,7 @@
 		 (when (rmsprop-centered-p opt)
                    (let ((mg (or (gethash key-mg registry)
 				 (setf (gethash key-mg registry)
-                                       (vt-zeros (vt-shape param))))))
+                                       (vt-zeros-like param)))))
                      (setf (gethash key-mg registry)
                            (vt-+ (vt-scale mg alpha)
 				 (vt-scale g-reg
@@ -368,7 +381,7 @@
                        ;; 参数规模的零张量再丢弃，纯属浪费。
                        (let* ((buf (or (gethash key-buf registry)
                                        (setf (gethash key-buf registry)
-                                             (vt-zeros (vt-shape param)))))
+                                             (vt-zeros-like param))))
                               (new-buf (vt-+ (vt-scale buf mom)
                                              (vt-/ g-reg denom))))
 			 (setf (gethash key-buf registry)
@@ -405,7 +418,7 @@
          (clip (optimizer-grad-clip opt))
          (clip-coeff (global-clip-coeff grad-list clip))
          (wd (optimizer-weight-decay opt))
-         (tt (incf (optimizer-step-count opt)))
+         (tt (optimizer-step-number opt))
          (registry (optimizer-state-registry opt)))
     (assert-param-grad-alignment opt param-list grad-list)
     (loop for p in param-list
@@ -427,7 +440,7 @@
 		 ;; 累积平方梯度
 		 (let ((v (or (gethash key-v registry)
                               (setf (gethash key-v registry)
-				    (vt-zeros (vt-shape param))))))
+				    (vt-zeros-like param)))))
                    (setf (gethash key-v registry)
 			 (vt-+ v (vt-square g-reg))))
 		 ;; 更新参数

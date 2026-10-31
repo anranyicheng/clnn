@@ -127,6 +127,10 @@
 
 (defmethod forward ((l embedding) indices)
   "前向传播: 查表获取嵌入向量."
+  ;; 索引 dtype 契约：必须是整数。clvt 的 VT-TAKE 对 :bool 索引不报错
+  ;; （把 0/1 当成合法下标），布尔掩码误传进来会静默取到第 1 行；
+  ;; 浮点索引则要到 VT-TAKE 内部才报 clvt 口径的错误。统一在入口拦下。
+  (assert-index-dtype indices "embedding forward")
   ;; 延迟初始化权重
   (unless (emb-weight l)
     (setf (emb-weight l)
@@ -170,8 +174,18 @@
                      (let ((idx (coerce (vt-ref flat-idx i) 'fixnum)))
                        (incf (gethash idx ht 0))))
                    ht)))
-         (dw (or (emb-dw l)
-                 (vt-zeros (list ne ed))))
+         ;; dw 语义：**本次 backward 的结果**（覆盖写，§5.1 的通用契约）。
+         ;; 旧实现取 (or (emb-dw l) (vt-zeros …)) 当累加起点，于是同一实例
+         ;; 连续两次 backward 会把梯度翻倍，与 dense/conv 的覆盖写不一致
+         ;; （同一张网络里「一半层记得清零、一半不记得」最难查）。
+         ;; 这里复用旧槽只为省一次 ne×ed 分配，用 VT-FILL 就地清零。
+         (dw (let ((old (emb-dw l))
+                   (want (value-float-dtype (vt-dtype (emb-weight l)))))
+               (if (and old
+                        (equal (vt-shape old) (list ne ed))
+                        (eq (vt-dtype old) want))
+                   (vt-fill old 0)
+                   (vt-zeros (list ne ed) :dtype want))))
          (norm-scale (emb-norm-scale l)))
     (dotimes (i flat-size)
       (let* ((idx-val (coerce (vt-ref flat-idx i) 'fixnum))
@@ -191,7 +205,9 @@
                 (+ (vt-ref dw idx-val j)
                    (* scale (coerce (vt-ref flat-go i j) 'double-float)))))))
     (setf (emb-dw l) dw)
-    (vt-zeros idx-shape)))
+    ;; dX 的形状是索引的形状（整数），语义上只是「占位」：嵌入层对索引没有
+    ;; 梯度。dtype 仍跟随 grad-output，避免把上游的 f32 链在这一步改成 f64。
+    (vt-zeros idx-shape :dtype (value-float-dtype (vt-dtype grad-output)))))
 
 (defmethod params ((l embedding))
   (when (emb-weight l)

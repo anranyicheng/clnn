@@ -2,19 +2,17 @@
 ;;;; 强化学习示例合集：CartPole / MountainCar / LunarLander 上的
 ;;;; REINFORCE / A2C / DQN / PPO。
 ;;;;
-;;;; 本文件包含 9 个独立示例（原本是 9 个单独文件，现已合并）：
+;;;; 本文件包含 7 个独立示例（原本是 9 个单独文件，现已合并）：
 ;;;;   1. REINFORCE             (train-reinforce)
 ;;;;   2. A2C                   (train-a2c)
 ;;;;   3. DQN / CartPole        (train-dqn)
 ;;;;   4. DQN / MountainCar     (train-mountaincar-dqn)
 ;;;;   5. DQN / LunarLander     (train-lunarlander-dqn)
 ;;;;   6. DQN / LunarLander v2  (train-lunarlander-dqn-v2)
-;;;;   7. PPO / CartPole        (train-ppo)
-;;;;   8. PPO / CartPole v2     (train-ppo-v2)
-;;;;   9. PPO / CartPole v3     (train-ppo-v3)
+;;;;   7. PPO / CartPole        (train-ppo-v3)   ← PPO 的早期两版已移除
 ;;;;
 ;;;; 用法（一次加载即可，无需再加载其它文件）：
-;;;;   (in-package :nn)
+;;;;   (in-package :clnn)
 ;;;;   (load "examples/cartpole-reinforce.lisp")
 ;;;;   (train-reinforce :episodes 500 :lr 1e-3 :hidden 32)
 ;;;;
@@ -183,7 +181,7 @@
            (weighted (vt-* ce-grad gnorm)))
       (zero-grad! model)
       (backward model weighted)
-      (optimizer-step opt (params model) (grads model)))
+      (update! model opt))
     (reduce #'+ rewards)))
 
 ;;; ============================================================
@@ -304,11 +302,11 @@
       ;; ---- 更新 actor ----
       (zero-grad! actor)
       (backward actor weighted-policy)
-      (optimizer-step actor-opt (params actor) (grads actor))
+      (update! actor actor-opt)
       ;; ---- 更新 critic ----
       (zero-grad! critic)
       (backward critic value-grad)
-      (optimizer-step critic-opt (params critic) (grads critic)))
+      (update! critic critic-opt))
     (reduce #'+ rewards)))
 
 ;;; ============================================================
@@ -496,7 +494,7 @@
                             (list batch-size 2))))
           (zero-grad! q-net)
           (backward q-net grad-output)
-          (optimizer-step q-opt (params q-net) (grads q-net)))
+          (update! q-net q-opt))
         (/ loss-sum batch-size)))))
 
 ;;; ============================================================
@@ -806,7 +804,7 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
                             (list batch-size n-actions))))
           (zero-grad! q-net)
           (backward q-net grad-output)
-          (optimizer-step q-opt (params q-net) (grads q-net)))
+          (update! q-net q-opt))
         (/ loss-sum batch-size)))))
 
 ;;; ============================================================
@@ -1222,7 +1220,7 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
                             (list batch-size n-actions))))
           (zero-grad! q-net)
           (backward q-net grad-output)
-          (optimizer-step q-opt (params q-net) (grads q-net)))
+          (update! q-net q-opt))
         (/ loss-sum batch-size)))))
 
 ;;; ============================================================
@@ -1561,7 +1559,7 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
                             (list batch-size n-actions))))
           (zero-grad! q-net)
           (backward q-net grad-output)
-          (optimizer-step q-opt (params q-net) (grads q-net)))
+          (update! q-net q-opt))
         (/ loss-sum batch-size)))))
 
 ;;; ============================================================
@@ -1660,338 +1658,6 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
 
 
 
-
-
-
-
-;;;; cartpole-ppo.lisp
-;;;; CartPole + PPO (Proximal Policy Optimization)
-;;;;
-;;;; 设计：
-;;;;   - policy-net: Dense(4→hidden) → ReLU → Dense(hidden→2)
-;;;;   - value-net:  Dense(4→hidden) → ReLU → Dense(hidden→1)
-;;;;   - 两个网络独立 forward/backward/optimizer-step
-;;;;   - 每个 iteration：收集 1 个 episode，计算 GAE，做 K 个 epoch 更新
-;;;;
-;;;; 前置：同文件内的 REINFORCE 段（复用环境）
-;;;; 用法：(train-ppo)
-
-(in-package :nn)
-
-;;; ============================================================
-;;; 1. 网络
-;;; ============================================================
-(defun make-policy-net (hidden)
-  (let ((m (make-sequential)))
-    (seq-add! m (make-dense hidden :in-dim 4 :activation :relu))
-    (seq-add! m (make-dense 2 :activation :none))
-    m))
-
-(defun make-value-net (hidden)
-  (let ((m (make-sequential)))
-    (seq-add! m (make-dense hidden :in-dim 4 :activation :relu))
-    (seq-add! m (make-dense 1 :activation :none))
-    m))
-
-;;; ============================================================
-;;; 2. 采集一个 episode
-;;; ============================================================
-(defun ppo-collect-episode (policy-net)
-  "返回 (values states-list actions-list rewards-list dones-list log-probs-list)。
-   states 是 (1, 4) VT 列表；其他都是标量列表。"
-  (let ((state (cartpole-reset))
-        (states '()) (actions '()) (rewards '()) (dones '()) (logps '())
-        (done nil))
-    (loop while (not done) do
-      (let* ((obs (cartpole-observe state))
-             (logits (forward policy-net obs))
-             (probs (vt-softmax logits))
-             (p0 (vt-ref probs 0 0))
-             (action (if (< (random 1.0d0) p0) 0 1))
-             (logp (log (if (= action 0) p0 (- 1.0d0 p0)))))
-        (push obs states)
-        (push action actions)
-        (push logp logps)
-        (multiple-value-bind (next reward done-p) (cartpole-step state action)
-          (push reward rewards)
-          (push (if done-p 1 0) dones)
-          (setf state next done done-p))))
-    (values (nreverse states) (nreverse actions) (nreverse rewards)
-            (nreverse dones) (nreverse logps))))
-
-;;; ============================================================
-;;; 3. GAE
-;;; ============================================================
-(defun ppo-compute-gae (value-net states-list rewards dones gamma lambda)
-  "返回 (values advs-list rets-list)。"
-  (let* ((n-steps (length rewards))
-         (states-batch (apply #'vt-concatenate 0 states-list))
-         (values (forward value-net states-batch))
-         (v-data (vt-data values))
-         (v-off (vt-offset values))
-         (v-rs (first (vt-strides values)))
-         (advs (make-array n-steps :element-type 'double-float))
-         (rets (make-array n-steps :element-type 'double-float))
-         (last-gae 0.0d0))
-    (loop for idx from (1- n-steps) downto 0 do
-      (let* ((v-cur (aref v-data (+ v-off (* idx v-rs))))
-             (v-next (if (= idx (1- n-steps))
-                         0.0d0
-                         (aref v-data (+ v-off (* (1+ idx) v-rs)))))
-             (r (nth idx rewards))
-             (done (nth idx dones))
-             (next-mask (if (= done 1) 0.0d0 1.0d0))
-             (delta (+ r (* gamma v-next next-mask) (- v-cur)))
-             (gae (+ delta (* gamma lambda next-mask last-gae))))
-        (setf (aref advs idx) gae)
-        (setf (aref rets idx) (+ gae v-cur))
-        (setf last-gae gae)))
-    ;; 标准化 advantage
-    (let* ((mean (/ (reduce #'+ advs) n-steps))
-           (var (/ (reduce #'+ (map 'list (lambda (x) (expt (- x mean) 2)) advs))
-                   n-steps))
-           (std (sqrt (+ var 1.0d-8))))
-      (dotimes (idx n-steps)
-        (setf (aref advs idx) (/ (- (aref advs idx) mean) std))))
-    (values (coerce advs 'list) (coerce rets 'list))))
-
-;;; ============================================================
-;;; 4. 单次 PPO 更新（一个 epoch）
-;;; ============================================================
-(defun ppo-update-epoch (policy-net value-net policy-opt value-opt
-                          states-list actions old-logps advs rets
-                          clip-eps entropy-coef value-coef)
-  "对整批数据做一次更新。"
-  (let* ((n (length actions))
-         (states-batch (apply #'vt-concatenate 0 states-list))
-         ;; ---- policy 前向 ----
-         (logits (forward policy-net states-batch))
-         (probs (vt-softmax logits))
-         (probs-data (vt-data probs))
-         (probs-off (vt-offset probs))
-         (probs-rs (first (vt-strides probs)))
-         (probs-cs (second (vt-strides probs)))
-         ;; ---- value 前向 ----
-         (values (forward value-net states-batch))
-         (v-data (vt-data values))
-         (v-off (vt-offset values))
-         (v-rs (first (vt-strides values)))
-         ;; ---- 梯度张量 ----
-         (policy-grad-arr (make-array (* n 2)
-                                      :element-type 'double-float
-                                      :initial-element 0.0d0))
-         (value-grad-arr (make-array n
-                                     :element-type 'double-float
-                                     :initial-element 0.0d0)))
-    (dotimes (i n)
-      (let* ((base-p (+ probs-off (* i probs-rs)))
-             (p0 (aref probs-data base-p))
-             (p1 (aref probs-data (+ base-p probs-cs)))
-             (action (nth i actions))
-             (old-logp (nth i old-logps))
-             (adv (nth i advs))
-             (ret (nth i rets))
-             (new-logp (log (if (= action 0) p0 p1)))
-             (ratio (exp (- new-logp old-logp)))
-             (unclipped (* ratio adv))
-             (clipped-ratio (max (- 1.0d0 clip-eps)
-                                 (min (+ 1.0d0 clip-eps) ratio)))
-             (clipped (* clipped-ratio adv))
-             (use-clipped (< clipped unclipped))
-             (in-range (and (>= ratio (- 1.0d0 clip-eps))
-                            (<= ratio (+ 1.0d0 clip-eps))))
-             ;; dL/dlogp_new
-             (dL-dlogp (cond
-                         ;; clip 生效且 ratio 超范围 → 梯度 0
-                         ((and use-clipped (not in-range)) 0.0d0)
-                         ;; 其他情况 → -ratio * adv
-                         (t (- (* ratio adv)))))
-             ;; d(log π(a))/dlogits_j = δ_{aj} - softmax_j
-             (delta-0 (if (= action 0) 1.0d0 0.0d0))
-             (delta-1 (if (= action 1) 1.0d0 0.0d0))
-             (g0 (* dL-dlogp (- delta-0 p0)))
-             (g1 (* dL-dlogp (- delta-1 p1)))
-             ;; entropy bonus: H = -Σ p log p
-             (H (+ (* -1.0d0 p0 (log (+ p0 1.0d-8)))
-                   (* -1.0d0 p1 (log (+ p1 1.0d-8)))))
-             (ent-g0 (* -1.0d0 p0 (+ (log (+ p0 1.0d-8)) H)))
-             (ent-g1 (* -1.0d0 p1 (+ (log (+ p1 1.0d-8)) H)))
-             ;; value 梯度：d(0.5*(V-R)²)/dV = V - R
-             (v-cur (aref v-data (+ v-off (* i v-rs)))))
-        (setf (aref policy-grad-arr (+ (* i 2) 0))
-              (/ (+ g0 (* entropy-coef ent-g0)) n))
-        (setf (aref policy-grad-arr (+ (* i 2) 1))
-              (/ (+ g1 (* entropy-coef ent-g1)) n))
-        (setf (aref value-grad-arr i)
-              (/ (* value-coef (- v-cur ret)) n))))
-    ;; ---- 更新 policy ----
-    (let ((pg (vt-reshape
-               (vt-from-sequence (coerce policy-grad-arr 'list) :dtype :float64)
-               (list n 2))))
-      (zero-grad! policy-net)
-      (backward policy-net pg)
-      (optimizer-step policy-opt (params policy-net) (grads policy-net)))
-    ;; ---- 更新 value ----
-    (let ((vg (vt-reshape
-               (vt-from-sequence (coerce value-grad-arr 'list) :dtype :float64)
-               (list n 1))))
-      (zero-grad! value-net)
-      (backward value-net vg)
-      (optimizer-step value-opt (params value-net) (grads value-net)))))
-
-;;; ============================================================
-;;; 5. 主训练
-;;; ============================================================
-(defun train-ppo (&key (iterations 300) (lr 3e-4) (gamma 0.99) (lambda 0.95)
-                        (hidden 64) (epochs-per-iter 10)
-                        (clip-eps 0.2d0) (entropy-coef 0.01d0)
-                        (value-coef 0.5d0))
-  (format t "~%=== CartPole + PPO ===~%")
-  (format t "policy: Dense(4→~a, ReLU) → Dense(~a→2)~%" hidden hidden)
-  (format t "value:  Dense(4→~a, ReLU) → Dense(~a→1)~%" hidden hidden)
-  (format t "iterations=~a  lr=~a  gamma=~a  lambda=~a~%" iterations lr gamma lambda)
-  (format t "ppo-epochs=~a  clip-eps=~a  entropy=~a  vf-coef=~a~%~%"
-          epochs-per-iter clip-eps entropy-coef value-coef)
-
-  (let* ((policy-net (make-policy-net hidden))
-         (value-net  (make-value-net  hidden))
-         (policy-opt (make-adam :lr lr))
-         (value-opt  (make-adam :lr lr))
-         (recent-returns '()))
-    ;; 触发初始化
-    (forward policy-net (vt-random-normal '(1 4)))
-    (forward value-net  (vt-random-normal '(1 4)))
-
-    (dotimes (iter iterations)
-      ;; ---- 收集 episode ----
-      (multiple-value-bind (states-list actions rewards dones old-logps)
-          (ppo-collect-episode policy-net)
-        (let ((ep-return (reduce #'+ rewards)))
-          ;; ---- 计算 GAE ----
-          (multiple-value-bind (advs rets)
-              (ppo-compute-gae value-net states-list rewards dones gamma lambda)
-            ;; ---- K 个 epoch ----
-            (dotimes (epoch epochs-per-iter)
-              (ppo-update-epoch policy-net value-net policy-opt value-opt
-                                states-list actions old-logps advs rets
-                                clip-eps entropy-coef value-coef)))
-          ;; ---- 记录 ----
-          (push ep-return recent-returns)
-          (when (zerop (mod (1+ iter) 20))
-            (let* ((n (min 50 (length recent-returns)))
-                   (avg (/ (reduce #'+ (subseq recent-returns 0 n)) n)))
-              (format t "Iter ~3a  return=~a  avg-last-~a=~,1f~%"
-                      (1+ iter) (round ep-return) n avg))))))
-
-    ;; ---- 测试 ----
-    (format t "~%测试 20 回合（贪心）...~%")
-    (let ((test-returns '()))
-      (dotimes (i 20)
-        (let ((state (cartpole-reset))
-              (done nil)
-              (total 0.0d0))
-          (loop while (not done) do
-            (let* ((obs (cartpole-observe state))
-                   (logits (forward policy-net obs))
-                   (q-list (vt-to-list (vt-flatten logits)))
-                   (action (if (> (first q-list) (second q-list)) 0 1)))
-              (multiple-value-bind (next reward done-p) (cartpole-step state action)
-                (incf total reward)
-                (setf state next done done-p))))
-          (push total test-returns)))
-      (format t "平均回报: ~,1f~%" (/ (reduce #'+ test-returns) 20.0)))
-    (values policy-net value-net)))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-(defun train-ppo-v2 (&key (iterations 100) (lr 3e-4) (gamma 0.99) (lambda 0.95)
-                            (hidden 64) (epochs-per-iter 10)
-                            (episodes-per-iter 20)
-                            (clip-eps 0.2d0) (entropy-coef 0.01d0)
-                            (value-coef 0.5d0))
-  (format t "~%=== CartPole + PPO v2 ===~%")
-  (format t "policy: Dense(4→~a, ReLU) → Dense(~a→2)~%" hidden hidden)
-  (format t "value:  Dense(4→~a, ReLU) → Dense(~a→1)~%" hidden hidden)
-  (format t "iterations=~a  episodes/iter=~a  epochs/iter=~a~%"
-          iterations episodes-per-iter epochs-per-iter)
-  (format t "lr=~a  gamma=~a  lambda=~a  clip-eps=~a  entropy=~a  vf-coef=~a~%~%"
-          lr gamma lambda clip-eps entropy-coef value-coef)
-
-  (let* ((policy-net (make-policy-net hidden))
-         (value-net  (make-value-net  hidden))
-         (policy-opt (make-adam :lr lr))
-         (value-opt  (make-adam :lr lr))
-         (recent-returns '()))
-    ;; 触发初始化
-    (forward policy-net (vt-random-normal '(1 4)))
-    (forward value-net  (vt-random-normal '(1 4)))
-
-    (dotimes (iter iterations)
-      ;; ---- 收集 N 个 episode，合并数据 ----
-      (let ((all-states '()) (all-actions '()) (all-rewards '())
-            (all-dones '()) (all-logps '())
-            (ep-returns '()))
-        (dotimes (ep episodes-per-iter)
-          (multiple-value-bind (states actions rewards dones logps)
-              (ppo-collect-episode policy-net)
-            (setf all-states (append all-states states))
-            (setf all-actions (append all-actions actions))
-            (setf all-rewards (append all-rewards rewards))
-            (setf all-dones (append all-dones dones))
-            (setf all-logps (append all-logps logps))
-            (push (reduce #'+ rewards) ep-returns)))
-
-        ;; ---- 计算 GAE ----
-        (multiple-value-bind (advs rets)
-            (ppo-compute-gae value-net all-states all-rewards all-dones gamma lambda)
-          ;; ---- K 个 epoch ----
-          (dotimes (epoch epochs-per-iter)
-            (ppo-update-epoch policy-net value-net policy-opt value-opt
-                              all-states all-actions all-logps advs rets
-                              clip-eps entropy-coef value-coef)))
-
-        ;; ---- 记录 ----
-        (let ((avg-ep (/ (reduce #'+ ep-returns) episodes-per-iter)))
-          (push avg-ep recent-returns)
-          (when (zerop (mod (1+ iter) 10))
-            (let* ((n (min 20 (length recent-returns)))
-                   (avg (/ (reduce #'+ (subseq recent-returns 0 n)) n))
-                   (steps-this-iter (length all-actions)))
-              (format t "Iter ~3a  avg-ep-return=~,1f  avg-last-~a=~,1f  steps=~a~%"
-                      (1+ iter) avg-ep n avg steps-this-iter))))))
-
-    ;; ---- 测试 ----
-    (format t "~%测试 20 回合（贪心）...~%")
-    (let ((test-returns '()))
-      (dotimes (i 20)
-        (let ((state (cartpole-reset))
-              (done nil)
-              (total 0.0d0))
-          (loop while (not done) do
-            (let* ((obs (cartpole-observe state))
-                   (logits (forward policy-net obs))
-                   (q-list (vt-to-list (vt-flatten logits)))
-                   (action (if (> (first q-list) (second q-list)) 0 1)))
-              (multiple-value-bind (next reward done-p) (cartpole-step state action)
-                (incf total reward)
-                (setf state next done done-p))))
-          (push total test-returns)))
-      (format t "平均回报: ~,1f~%" (/ (reduce #'+ test-returns) 20.0)))
-    (values policy-net value-net)))
 
 
 
@@ -2155,14 +1821,14 @@ Episode 2000  return=500  avg-last-100=500.0  steps=606442  learns=151561
                (list n 2))))
       (zero-grad! policy-net)
       (backward policy-net pg)
-      (optimizer-step policy-opt (params policy-net) (grads policy-net)))
+      (update! policy-net policy-opt))
     ;; ---- 更新 value ----
     (let ((vg (vt-reshape
                (vt-from-sequence (coerce value-grad-arr 'list) :dtype :float64)
                (list n 1))))
       (zero-grad! value-net)
       (backward value-net vg)
-      (optimizer-step value-opt (params value-net) (grads value-net)))
+      (update! value-net value-opt))
     ;; 返回平均 KL
     (/ kl-sum n)))
 

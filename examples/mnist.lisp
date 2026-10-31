@@ -274,7 +274,7 @@
                    (loss (compute-loss loss-fn pred y))
                    (grad (compute-loss-gradient loss-fn pred y)))
               (backward model grad)
-              (optimizer-step opt (params model) (grads model))
+              (update! model opt)
               (incf epoch-loss (vt-item loss))
               (incf epoch-correct (mnist-accuracy-vt pred y)))))
         (format t "Epoch ~a/~a  loss=~,6f  train=~,4f  (~,1fs)~%"
@@ -332,7 +332,7 @@
                    (loss (compute-loss loss-fn pred y))
                    (grad (compute-loss-gradient loss-fn pred y)))
               (backward model grad)
-              (optimizer-step opt (params model) (grads model))
+              (update! model opt)
               (incf epoch-loss (vt-item loss))
               (incf epoch-correct (mnist-accuracy-vt pred y))))
           (when (zerop (mod (1+ b) log-every))
@@ -399,7 +399,7 @@
                    (loss (compute-loss loss-fn pred y))
                    (grad (compute-loss-gradient loss-fn pred y)))
               (backward model grad)
-              (optimizer-step opt (params model) (grads model))
+              (update! model opt)
               (incf epoch-loss (vt-item loss))
               (incf epoch-correct
                     (mnist-accuracy-labels pred *mnist-train-labels* start)))))
@@ -487,7 +487,7 @@
                    (loss (compute-loss loss-fn pred y))
                    (grad (compute-loss-gradient loss-fn pred y)))
               (backward model grad)
-              (optimizer-step opt (params model) (grads model))
+              (update! model opt)
               (incf epoch-loss (vt-item loss))
               (incf epoch-correct
                     (mnist-accuracy-labels pred *mnist-train-labels* start)))))

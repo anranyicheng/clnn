@@ -100,10 +100,9 @@
   (backward model grad-output))
 
 (defun model-update! (model optimizer)
-  "使用优化器更新模型参数."
-  (let ((param-list (params model))
-        (grad-list (grads model)))
-    (optimizer-step optimizer param-list grad-list)))
+  "使用优化器更新模型参数。等价于 (update! MODEL OPTIMIZER)。
+   保留此名只为兼容旧代码 —— 两条路径现在走同一个方法，步号语义也一致。"
+  (update! model optimizer))
 
 (defun collect-all-layers (component)
   "递归收集所有子层."
@@ -133,7 +132,18 @@
      (with-training nil (forward model x))"
   (set-training! model mode)
   (dolist (layer (collect-all-layers model))
-    (set-training! layer mode)))
+    (set-training! layer mode))
+  model)
+
+(defun train! (model)
+  "把模型切到训练态（dropout 生效、BN 用 batch 统计量）。返回 MODEL 便于串联。
+   加载模型或做推理前忘了切态，是「同一输入两次结果不同」的头号成因。"
+  (set-model-training! model t))
+
+(defun eval! (model)
+  "把模型切到推理态（dropout 关闭、BN 用 running 统计量）。返回 MODEL。
+   LOAD-MODEL 已经默认做了这件事，这里供手工构造模型后显式切换。"
+  (set-model-training! model nil))
 
 (defun param-count (model &key trainable-only)
   "统计模型参数量."
@@ -231,7 +241,7 @@
    历史实现对 INDICES 直接取 (VT-REF indices i)，在 INDICES 为 2D
    （例如 (batch, seq) 的 token id）时会报「索引数量与维度数不匹配」；
    这里统一先展平。"
-  (let* ((flat (vt-flatten indices))
+  (let* ((flat (assert-index-dtype (vt-flatten indices) "tensor-one-hot: 索引"))
          (batch (reduce #'* (vt-shape flat)))
          (result-data
            (make-array
@@ -248,18 +258,39 @@
      (vt-from-array result-data :fast t)
      (list batch num-classes))))
 
+(defun %mask-true-p (v)
+  "掩码元素的真值判定。
+
+   为什么需要它：clvt 引入 :bool 之后（CONVENTIONS §17），一个「掩码」可能是
+     · :bool 张量 —— VT-MAP 交给 lambda 的是**裸字节 0/1**；
+     · :int8/:int64 张量 —— 旧写法（0/1 整数掩码）仍然合法；
+     · 浮点张量 —— 非零即真。
+   历史实现写的是 (PLUSP MI)，对裸 0/1 成立、对 T/NIL 直接抛
+   「T is not of type NUMBER」；而如果 clvt 日后把逻辑视图（§17.8）透到
+   VT-MAP，布尔掩码就会当场炸在这一行。这层判定把两种表示都收下，
+   并把「掩码语义 = 非零为真」写成代码而不是口头约定。"
+  (if (numberp v) (plusp v) (not (null v))))
+
 (defun tensor-masked-fill (x mask value)
-  "将 mask 为真的位置填充为 value."
+  "将 MASK 为真的位置填充为 VALUE。
+
+   MASK 可以是 :bool（比较/逻辑函数的缺省返回）、整数或浮点张量，
+   真值语义统一按「非零为真」。返回值 dtype 跟随 X。
+   注意 MASK 只作为**条件**消费：不要拿 :bool 张量去做算术
+   （真⊗真 = 真，不是 1），需要乘性掩码请先 (VT-ASTYPE mask :float64)。"
   (vt-map
    (lambda (xi mi)
-     (if (> mi 0.0d0) value xi))
+     (if (%mask-true-p mi) value xi))
    x mask))
 
 (defun tensor-where (condition x y)
-  "三元选择."
+  "三元选择（对标 numpy.where(cond, x, y)）。
+
+   CONDITION 同样接受 :bool / 整数 / 浮点，非零为真。
+   返回 dtype 为 X 与 Y 的提升结果（BOOLEAN 分支会提升为数值）。"
   (vt-map
    (lambda (c xi yi)
-     (if (> c 0.0d0) xi yi))
+     (if (%mask-true-p c) xi yi))
    condition x y))
 
 ;;; ------------------------------------------------------------------
@@ -277,11 +308,13 @@
 (defun tensor-gather (x indices &key axis)
   "按索引取值。AXIS 为 NIL 时按展平索引取，否则沿 AXIS gather。
    等价于 torch.gather 的「沿轴取」用法（封装 vt-take）。"
+  (assert-index-dtype indices "tensor-gather: 索引")
   (vt-take x indices :axis axis))
 
 (defun tensor-scatter (x indices values &key (mode :raise))
   "按【展平索引】就地写入 VALUES（封装 vt-put，对标 numpy.put）。
    注意：这不是 torch.scatter 的逐维语义，仅支持展平索引写入。"
+  (assert-index-dtype indices "tensor-scatter: 索引")
   (vt-put x indices values :mode mode))
 
 (defun tensor-pad (x pad-width &key (mode :constant) (constant-values 0))
@@ -878,16 +911,26 @@
       (write (model->plist model) :stream out))))
 
 (defun load-model (filepath)
-  "从文件加载模型。
+  "从文件加载模型，**并切到推理态**。
 
    安全说明：模型文件只是纯数据的 plist，不需要任何读宏求值。
    这里显式把 *READ-EVAL* 绑定为 NIL —— 否则恶意模型文件中的
    #.(...) 会在 READ 阶段就被求值，等价于任意代码执行
-   （例如 #.(删除整个目录) 这种形式）。"
+   （例如 #.(删除整个目录) 这种形式）。
+
+   为什么加载后直接切推理态：LOAD → 预测 是最常见的用法，而 *TRAINING-MODE*
+   默认是 T，于是 dropout 仍然生效、BN 用 batch 统计量 —— 同一输入两次结果
+   不同，且没有任何报错。要继续训练，显式调 (TRAIN! MODEL)。"
   (with-open-file (in filepath :direction :input)
     (let ((*package* (find-package :nn))
           (*read-eval* nil))
-      (plist->model (read in)))))
+      (let ((model (plist->model (read in))))
+        ;; 存档可能是 f32 时代的产物（或从别处转来的权重）。这里归一到
+        ;; 单一计算域，而不是留给每一层的闸门逐个折 —— 那样第一次 forward
+        ;; 会把每个参数都 astype 一遍，纯浪费。
+        (normalize-params! model)
+        (set-model-training! model nil)
+        model))))
 
 
 

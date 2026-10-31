@@ -492,8 +492,12 @@
               ;; -------- 反向：rnn-sequence --------
               (zero-grad! seq-layer)
               (backward seq-layer g-seq)
-              (model-update! seq-layer opt)
-              (model-update! head opt))))
+              ;; seq-layer 与 head 各套一个优化器调用，但这是**同一个训练步**：
+              ;; 用 WITH-OPTIMIZER-STEP 圈起来，Adam 的偏差校正才按一步计，
+              ;; 否则两步共用 t=1、t=2 两个不同的校正系数，等于每步换了学习率。
+              (with-optimizer-step (opt)
+                (model-update! seq-layer opt)
+                (model-update! head opt)))))
 
         (when (zerop (mod epoch 100))
           (let* ((seq-out (forward seq-layer x))

@@ -113,9 +113,14 @@
         (equal (vt-shape dx) (vt-shape x)))))
 
 ;;; ================================================================
-;;; BUG-08: Embedding backward 梯度累积（不清零时）
+;;; BUG-08: Embedding 的梯度不跨调用累积（覆盖写，§5.1）
 ;;; ================================================================
-(format t "~%--- BUG-08: Embedding 梯度累积 ---~%")
+;;; 本项原先把「不清零时梯度越滚越大」记成期望（ratio ≈ 4，平方后 4 倍）。
+;;; 那等于把「漏清零会静默放大梯度」当成特性：dense/conv 覆盖写不受影响，
+;;; embedding/lstm 却翻倍，同一模型两种语义。现统一为覆盖写，ratio ≈ 1。
+;;; 「同一 backward 内同一行被多次命中要累加」仍是 scatter-add 语义，
+;;; 由 indices=(1 2 3) 各自的 4 个元素相加体现，与跨调用无关。
+(format t "~%--- BUG-08: Embedding 梯度不跨调用累积 ---~%")
 
 (let* ((emb (make-embedding 10 4))
        (indices (vt-from-array (make-array '(3) :element-type 'fixnum
@@ -130,9 +135,9 @@
            (s1 (vt-item (vt-sum (vt-square dw1))))
            (s2 (vt-item (vt-sum (vt-square dw2))))
            (ratio (/ s2 s1)))
-      (format t "  两次 backward 梯度比: ~a (累积应为 4.0)~%" ratio)
-      (ck "BUG-08: Embedding backward 梯度累积 (ratio ≈ 4)"
-          (< (abs (- ratio 4.0d0)) 0.1d0)))))
+      (format t "  两次 backward 梯度比: ~a (覆盖写应为 1.0)~%" ratio)
+      (ck "BUG-08: Embedding backward 不跨调用累积 (ratio ≈ 1)"
+          (< (abs (- ratio 1.0d0)) 0.05d0)))))
 
 ;;; ================================================================
 ;;; BUG-14: RMSprop centered 分母不为 NaN

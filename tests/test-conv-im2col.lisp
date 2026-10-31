@@ -239,14 +239,31 @@
 ;;;    float32 必须被明确挡住而不是静默读错位模式
 ;;; ---------------------------------------------------------------
 
-(format t "~%=== 6. 非 float64 输入必须被拒绝 ===~%")
+(format t "~%=== 6. 非 float64 输入：层归约、内部内核哨兵拒绝 ===~%")
+;;; v2.2 把「谁来转」定清楚了，于是这里分成两半，两半的期望值相反：
+;;;
+;;;   · **层**（max-pool2d / avg-pool2d / conv2d）：forward 走 :AROUND 闸门，
+;;;     f32 输入被规约成 f64 后正常计算。用户不再需要自己 astype。
+;;;   · **内部函数**（im2col / col2im）：不经闸门（它们不是层方法），
+;;;     %ENSURE-FLOAT64-DATA 仍然拒绝 —— 因为它按
+;;;     (SIMPLE-ARRAY DOUBLE-FLOAT (*)) 声明读底层数组，读到 f32 会静默错值。
+;;;     这条断言现在是「哨兵有用」的证明，不再是「能力的边界」。
 (flet ((expect-error (name thunk)
          (ck name (handler-case (progn (funcall thunk) nil) (error () t)))))
   (let ((x32 (vt-astype (vt-random (list 1 2 8 8)) :float32)))
-    (expect-error "im2col 拒绝 float32" (lambda () (im2col x32 3 3 1 1 1 1)))
-    (expect-error "max-pool2d 拒绝 float32" (lambda () (forward (make-max-pool2d 2) x32)))
-    (expect-error "avg-pool2d 拒绝 float32" (lambda () (forward (make-avg-pool2d 2) x32))))
-  (expect-error "col2im 拒绝 float32"
+    ;; 层：接受并输出计算域
+    (ck "max-pool2d 接受 f32 输入，输出 f64"
+        (eq :float64 (vt-dtype (forward (make-max-pool2d 2) x32))))
+    (ck "avg-pool2d 接受 f32 输入，输出 f64"
+        (eq :float64 (vt-dtype (forward (make-avg-pool2d 2) x32))))
+    (ck "conv2d 接受 f32 输入，输出 f64"
+        (eq :float64 (vt-dtype (forward (make-conv2d 2 3 :in-channels 2
+                                                     :stride 1 :padding 1)
+                                        x32))))
+    ;; 内部内核：哨兵仍然拒绝（绕过闸门的直接调用）
+    (expect-error "im2col 直调时哨兵拒绝 f32"
+                  (lambda () (im2col x32 3 3 1 1 1 1))))
+  (expect-error "col2im 直调时哨兵拒绝 f32"
                 (lambda () (col2im (vt-astype (vt-random (list 4 8)) :float32)
                                    2 2 1 1 0 0 (list 1 2 3 3)))))
 

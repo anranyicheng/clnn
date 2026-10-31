@@ -22,6 +22,10 @@ HEAP="${CLNN_TEST_HEAP:-4096}"
 # 快速套件：纯合成数据、无外部依赖，单文件 < 40 秒
 FAST_TESTS=(
   clnn-test-suite
+  dtype-contract-test
+  manual-backward-contract-test
+  test-runtime-contract
+  contract-probes
   test-architecture-fixes
   test-regression-fixes
   test-copy-network

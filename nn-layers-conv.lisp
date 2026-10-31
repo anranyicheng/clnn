@@ -2,11 +2,27 @@
 
 (defun %ensure-float64-data (vt who)
   "IM2COL / COL2IM / 池化直接用 (VT-DATA) 读底层数组，并按
-   (SIMPLE-ARRAY DOUBLE-FLOAT (*)) 声明访问。若传入 float32 等其它 dtype，
+   (SIMPLE-ARRAY DOUBLE-FLOAT (*)) 声明访问。若底层数组不是 double-float，
    SBCL 会信任该声明从而读到错误的位模式（静默错值而不是报错）。
-   这里在入口处显式挡住。"
+
+   v2.2 起 clnn 的计算域唯一（+COMPUTE-DTYPE+ = :float64），而 FORWARD /
+   BACKWARD 的 :AROUND 闸门会把任何 f32 输入折成 f64，所以**正常使用下
+   这里不可能失败**。它现在的作用是「内部一致性哨兵」：一旦某条路径绕过
+   闸门直接调 IM2COL，这个断言会立刻抓到，而不是产出静默的垃圾数字。
+
+   换句话说：**用户看到这条错误等于看到了框架的 bug**，不要试图用
+   (vt-astype x :float64) 绕过 —— 那正是本该由闸门完成的事。"
+  ;; 注意这里**硬编码 :float64**，不跟 +COMPUTE-DTYPE+ 走。
+  ;; 理由：本文件的内核按 (SIMPLE-ARRAY DOUBLE-FLOAT (*)) 声明读数组，
+  ;; 这个事实不会因为「有人把计算域改成 f32」就改变 —— 反过来，如果让哨兵
+  ;; 跟着常量走，改常量就会**放行** f32 并读到错误的位模式（静默错值）。
+  ;; 哨兵守的是内核的物理能力，不是框架的策略。
   (unless (eq (vt-dtype vt) :float64)
-    (error "~a: 仅支持 :float64 张量，收到 ~a。请先用 (vt-astype x :float64) 转换。"
+    (error "~a: 内核只支持 :float64 底层数组，收到 ~a。~%~
+            若计算域仍是 :float64，这属于内部错误 —— FORWARD/BACKWARD 的 :AROUND ~
+            闸门本应已规约输入，请报告这个 bug。~%~
+            若你把 NN::+COMPUTE-DTYPE+ 改成了 :float32，那是本版不支持的做法：~%~
+            卷积与池化的手写内核只实现了 double-float，见契约文档 §2.6.2。"
            who (vt-dtype vt)))
   vt)
 

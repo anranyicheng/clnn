@@ -34,17 +34,24 @@
            (setf (dropout-mask-cache l) nil)
            input)
           ((>= p 1.0d0)
-           (setf (dropout-mask-cache l) (vt-zeros (vt-shape input)))
-           (vt-zeros (vt-shape input)))
+           (setf (dropout-mask-cache l) (vt-zeros-like input))
+           (vt-zeros-like input))
           (t
            (let* ((scale (if (dropout-inverted-p l)
                              (/ 1.0d0 (- 1.0d0 p))
                              1.0d0))
+                  ;; MASK 的 dtype 必须显式钉成浮点。Vt-MAP 在 dtype=nil 时按
+                  ;; 输入提升（CONVENTIONS §3.4 记录过同类缺陷）：整数输入
+                  ;; 得到整数掩码，1/(1-p) 被**截断**（p=0.3 时 1.428→1，
+                  ;; inverted dropout 退化成普通 dropout，静默少缩放）；
+                  ;; :bool 输入得到布尔掩码，`vt-*` 随之改派逻辑与，
+                  ;; 保留位也从 1/(1-p) 塌成 1。见契约文档 §2.4/§6.4。
                   (mask (vt-map
                          (lambda (x)
                            (declare (ignore x))
                            (if (< (random 1.0d0) p) 0.0d0 scale))
-                         input)))
+                         input
+                         :dtype (value-float-dtype (vt-dtype input)))))
              (setf (dropout-mask-cache l) mask)
              (vt-* input mask)))))
       input))
@@ -140,6 +147,16 @@
       (setf (bn-beta l) (vt-zeros (list nf)))
       (setf (bn-running-mean l) (vt-zeros (list nf)))
       (setf (bn-running-var l) (vt-ones (list nf))))
+    ;; 运行统计量是 buffer、不在 PARAMS 里，用户把 gamma/beta astype 成 f32 时
+    ;; 它们不会跟着变。不变量：RUNNING-MEAN/VAR 的 dtype == GAMMA 的 dtype。
+    ;; 不维护它，推理态 (VT-- INPUT RM) 会把 f32 输入提升成 f64 —— 训练态看不出，
+    ;; 评测/导出时才静默变宽（G-11 的 buffer 分支）。
+    (let ((target (if (bn-affine-p l)
+                      (vt-dtype (bn-gamma l))
+                      (value-float-dtype (vt-dtype input)))))
+      (unless (eq target (vt-dtype (bn-running-mean l)))
+        (setf (bn-running-mean l) (vt-astype (bn-running-mean l) target))
+        (setf (bn-running-var l) (vt-astype (bn-running-var l) target))))
     (if (= rank 2)
         (let* ((batch (first shape)))
           (setf (bn-batch-size l) batch)

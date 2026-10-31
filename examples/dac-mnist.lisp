@@ -170,6 +170,9 @@
                    (grad  (compute-loss-gradient loss-fn x-hat x)))
               (let ((dz (backward decoder grad)))
                 (backward encoder dz))
+              ;; encoder 与 decoder 不是一个容器里的兄弟层，没有共同的
+              ;; COMPONENT 可传给 UPDATE!，所以手工把两张参数表拼成一张
+              ;; —— 一次 OPTIMIZER-STEP 仍然只算一个优化步。
               (optimizer-step opt
                               (append (params encoder) (params decoder))
                               (append (grads  encoder) (grads  decoder)))
@@ -510,6 +513,7 @@
                              (dz-total (vt-+ dz-dac
                                              (vt-scale dz-ae ae-weight))))
                         (backward encoder dz-total)
+                        ;; 同 pre-train 段：两张参数表手工拼成一张 = 一个优化步
                         (optimizer-step opt
                                         (append (params encoder)
                                                 (params decoder))

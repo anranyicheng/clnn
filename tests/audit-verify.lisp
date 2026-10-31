@@ -247,9 +247,13 @@
            (< diff 1.0d-10))))
 
 ;;;; ----------------------------------------------------------------
-;;;; 额外: LSTM BPTT 梯度累积
+;;;; 额外: LSTM 的梯度不跨调用累积（覆盖写，§5.1）
 ;;;; ----------------------------------------------------------------
-(format t "~%--- [额外] LSTM BPTT 梯度累积 ---~%")
+;;;; 本项原先把「两次 backward 梯度翻四倍」当成通过标准，即把「累加」当成规约。
+;;;; 但同一张网络里 dense/conv 是覆盖写、lstm/embedding 是累加，忘记 zero-grad!
+;;;; 时「一半层对、一半层错」，且跨层组合结果不可预测（§7.3）。现在全部层统一
+;;;; 为覆盖写：一次 backward 的结果只由本次 forward 缓冲决定，与上一次无关。
+(format t "~%--- [额外] LSTM 梯度不跨调用累积 ---~%")
 
 (let* ((lstm (make-lstm 4 8))
        (x (vt-random-normal (list 2 3 4))))
@@ -262,9 +266,9 @@
       (let* ((dw2 (lstm-dweight-ih lstm))
              (ratio (/ (vt-item (vt-sum (vt-square dw2)))
                        (vt-item (vt-sum (vt-square dw1))))))
-        (format t "  两次backward梯度范数比 (预期 4.0): ~a~%" ratio)
-        (check "LSTM backward 梯度正确累积 (~= 4x)"
-               (< (abs (- ratio 4.0d0)) 0.5d0))))))
+        (format t "  两次backward梯度范数比 (覆盖写应为 1.0): ~a~%" ratio)
+        (check "LSTM backward 不跨调用累积（覆盖写，§5.1）"
+               (< (abs (- ratio 1.0d0)) 0.05d0))))))
 
 ;;;; ================================================================
 ;;;; 总结

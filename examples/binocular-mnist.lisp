@@ -761,7 +761,7 @@
                    (loss (compute-loss loss-fn pred y))
                    (grad (compute-loss-gradient loss-fn pred y)))
               (backward model grad)
-              (optimizer-step opt (params model) (grads model))
+              (update! model opt)
               (incf ep-loss (vt-item loss))
               (incf ep-correct
                     (mnist-accuracy-labels pred *mnist-train-labels* start))))

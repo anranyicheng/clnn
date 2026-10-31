@@ -14,6 +14,13 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
   * 可验证     —— 核心层有数值梯度对拍测试，损失函数有解析 vs 有限差分验证
   * 可序列化   —— 模型一键保存与加载，参数逐位一致
   * 无外部依赖 —— 除 clvt 外无硬依赖，sb-simd 为可选加速
+  * 纯手写求导 —— 底层 clvt 不含自动微分，本库每层的反向公式都是手推手写的；
+                 由此推出的七条协定见契约文档 §1.5，可执行对照见
+                 tests/manual-backward-contract-test.lisp
+  * 单一计算域 —— 全部计算恒为 float64（契约文档 §2.0）。float32 不是可选的
+                 精度，而是会在入口被规约一次的输入类型；索引用整数、掩码用
+                 布尔，三域互不越界。理由：没有 autograd 时精度传播只能靠人肉
+                 追踪几十处缓冲，且 f32/f64 混跑实测慢 8.4 倍
 
 
 特性
@@ -87,7 +94,9 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
   深拷贝      copy-network（基于 CLOS 泛型分发，自动递归容器）
   模型统计    param-count / flops-estimate
   梯度工具    compute-grad-norm / clipped-gradient-update!
-  模式切换    with-training / set-model-training! / reset-training!
+  参数更新    update! / model-update!（一次调用 = 一个优化步）
+              分片共享一步用 with-optimizer-step
+  模式切换    with-training / set-model-training! / train! / eval! / reset-training!
 
 
 核心概念
@@ -98,6 +107,17 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
   每个层通过一组泛型函数协作：前向、反向、参数枚举、梯度枚举、
   梯度槽定位、缓存槽定位。用户自定义层只需实现这几个方法即可
   被库完整接纳，无需修改任何库代码。
+
+  因为 clvt 没有计算图（见"已知限制"与 FAQ），"反向"不是框架自动推的：
+    * forward 把反向要用的中间量写进自己的 cache 槽（M1）
+    * backward 只读这些缓存，按手推公式算，把参数梯度写进梯度槽、
+      并返回 dX 给上一层
+    * 梯度槽一律"覆盖写"：一次 forward+backward 之后，grads 给的是
+      这一次的梯度，与上一次无关（M4）——所以漏掉 zero-grad! 不会
+      让梯度翻倍，它只是不清空而已
+    * 参数更新是显式两步：grads ← backward、params ← optimizer-step
+
+  这四条对应用户自定义层时的必做项，完整清单见契约文档 §1.5.5。
 
 
 延迟初始化
@@ -153,8 +173,8 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
 
 `tests/` 下只放测试，全部带有断言，可以用一个脚本跑完：
 
-    cd tests && ./run-tests.sh            # 全部 14 个文件（约 65 秒）
-    cd tests && ./run-tests.sh --fast     # 只跑快速套件（约 20 秒）
+    cd tests && ./run-tests.sh            # 全部 17 个文件（约 70 秒）
+    cd tests && ./run-tests.sh --fast     # 只跑快速套件（15 个，约 25 秒）
     cd tests && ./run-tests.sh test-architectures pdf-bugs-verify   # 指定文件
 
 所有测试文件在存在失败项时都会以非 0 退出，因此可以直接接到 CI。
@@ -163,6 +183,8 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
   clnn-test-suite.lisp          主回归套件（26 项）
   test-regression-fixes.lisp    带缺陷编号的回归（26 项）
   test-copy-network.lisp        深拷贝保真（21 项）
+  manual-backward-contract-test.lisp  手写架构协定 M1/M3/M4/M5/M7（16 项）
+  dtype-contract-test.lisp      dtype 契约 A–I 组（70 项，含 f32 全链验收）
   gradcheck-all-layers.lisp     全层/全损失 解析梯度 vs 中心差分
   test-architectures.lisp       架构级集成测试（CNN/LSTM/Transformer/…，14 组）
   test-end-to-end-training.lisp 端到端训练收敛（16 个用例）
@@ -248,7 +270,11 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
 --------------------------------------------------------------------------------
 
   * 无 GPU 支持，纯 CPU 运行
-  * 无自动微分，所有层的反向传播手写
+  * 无自动微分：clvt 是纯张量库（没有计算图/磁带/伴随模式），因此
+    所有层的反向传播都是手推手写的一阶解析导；二阶导、动态图不提供
+  * 只有一种计算精度（float64）：不支持混合精度/半精度训练。f32 数据可以
+    直接喂进来（会自动转成 f64 并提示一次），但计算不会在 f32 上跑 ——
+    想省内存请从数据管道入手
   * 卷积在纯 Lisp 下有性能瓶颈
   * 不支持动态图，形状在前向时确定
   * 批量矩阵乘法仅浮点类型走 SIMD，整数类型回退到通用路径
@@ -302,8 +328,42 @@ clnn 是一个基于 clvt（Common Lisp 张量库）的纯 Lisp 神经网络库�
       是最直接的方案。
 
   问：为什么不做自动微分？
-  答：库采用静态图风格，每个层的反向传播手动推导并经过数值验证。
-      这牺牲了灵活性，但换来了可预测的性能与可读的代码。
+  答：两个层次的原因。
+
+      一是底层就没有：clvt 是纯张量库，没有计算图、没有 grad_fn、没有
+      磁带、也没有对偶数。它唯一的 vt-gradient 是数值梯度（对标
+      numpy.gradient），不能代替解析导数。要在 clnn 里做自动微分，得先
+      在 clvt 里造一层计算图 —— 那是另一个项目。
+
+      二是也不打算做：本库是个人研究级别的实现，用"可读、可预测、可逐位
+      对拍"换掉了动态图的灵活性。每层一个 (defmethod backward ...)，公式
+      就在代码里摊着，跟 tests/gradcheck-all-layers.lisp 的有限差分逐项
+      对拍。代价是没有动态图（if/while 依赖数据的结构需要在模型层显式组织），
+      也没有二阶导。
+
+      这条前提推出一整套约束（每层自缓存、梯度覆盖写、更新显式两步……），
+      写成契约文档 §1.5 的 M1–M7，并由 tests/manual-backward-contract-test.lisp
+      守着。
+
+  问：为什么只有 float64？我的数据是 float32，想要单精度训练。
+  答：因为这套架构管不住两种精度。
+
+      自动微分的框架可以让 f32 与 f64 混在同一张图里（框架知道每个中间量的
+      来源，能在图上统一标注）。这里是纯手写求导：状态缓冲、梯度累加器、
+      running 统计量、掩码、零 dX 等几十处内部缓冲，每一处都得人肉判断"该
+      跟谁同 dtype"。试过一次——补了二十多处，才勉强让 f32 全链保住，而
+      下一次改动又要重来一遍。
+
+      性能上也不划算。实测 4000×4000：f64 逐元素加法 852 ms，纯 f32 584 ms，
+      但 f32 与 f64 混着算要 7165 ms——慢 8.4 倍；因为每个算子都要先定结果
+      dtype、再分配 f64 临时数组、再逐元素转换。而"参数 f64 + 数据 f32"恰好
+      是最容易出现的组合。
+
+      所以现在的做法是：单一计算域，f32 数据在入口转一次。这不会拖慢训练——
+      闸门遇到已经是 f64 的张量直接原样返回，零分配。只要在数据管道里转一次
+      再复用（而不是每个 batch 转一次），成本就完全消失。
+
+      参见契约文档 §2.0（决定与实测）与 §2.6.1（接入 f32 数据的正确姿势）。
 
 
 状态
@@ -335,6 +395,11 @@ clvt 预编译完成后，后续加载 clnn 在默认堆下即可完成。
 
   当前版本的关键修复（2026-10）：
 
+    * 正确性  compute-loss 的 target 不过闸门，f32 目标与 f64 logits 混跑
+              （mse 损失慢 4.8×、梯度慢 6.6×，且不报错）
+    * 正确性  优化步步号按 optimizer-step 调用次数计：逐层 update! 时 Adam 的
+              偏差校正失效、梯度裁剪逐层各剪一次
+    * 正确性  load-model 不切推理态，save → load → predict 得到随机结果
     * 安全    load-model 未禁用 *read-eval*，模型文件可执行任意代码
     * 性能    ce-loss 用 (vt-eye C) 构造 one-hot，C=50000 时申请 20 GB 崩溃
     * 性能    embedding 的 max-norm 每次前向重归一化整表（O(V·D)）

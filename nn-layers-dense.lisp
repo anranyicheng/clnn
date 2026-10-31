@@ -463,7 +463,7 @@
           (backward (residual-block l) grad-output)))
     (vt-+ grad-output
 	  (or grad-block
-	      (vt-zeros (vt-shape grad-output))))))
+	      (vt-zeros-like grad-output)))))
 
 (defmethod params ((l residual))
   (params (residual-block l)))

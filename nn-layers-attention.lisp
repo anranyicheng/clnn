@@ -37,7 +37,10 @@
                          (if (< (random 1.0d0) dropout-rate)
                              0.0d0
                              keep-scale))
-                       attn))))
+                       attn
+                       ;; 与 DROPOUT 层同一条契约：掩码 dtype 显式钉成浮点，
+                       ;; 否则 VT-MAP 会按输入提升把 keep-scale 截断。见 §2.4。
+                       :dtype (value-float-dtype (vt-dtype attn))))))
          (attn-dropped (if dropout-mask
                            (vt-* attn dropout-mask)
                            attn))

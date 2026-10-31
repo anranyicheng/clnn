@@ -325,5 +325,7 @@
     (destructuring-bind (b ci co h w kh kw) cfg
       (bench-conv2d-methods :B b :C-in ci :C-out co :H h :WI w :kh kh :kw kw
                             :n-fwd 20 :n-bwd 10))))
-(bench-conv2d-methods :B 32 :C-in 16 :C-out 16 :H 14 :WI 14)
-(bench-conv2d-suite)
+
+;; 加载本文件不会自动跑基准 —— 手动调用：
+;;   (bench-conv2d-methods :B 32 :C-in 16 :C-out 16 :H 14 :WI 14)
+;;   (bench-conv2d-suite)

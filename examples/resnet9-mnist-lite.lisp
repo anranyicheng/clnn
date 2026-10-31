@@ -221,7 +221,7 @@
                        (loss (compute-loss loss-fn pred y))
                        (grad (compute-loss-gradient loss-fn pred y)))
                   (backward model grad)
-                  (optimizer-step opt (params model) (grads model))
+                  (update! model opt)
                   (incf epoch-loss (coerce (vt-item loss) 'double-float))
                   (incf epoch-correct (accuracy-labels pred train-y start))))
               (when (zerop (mod (1+ b) log-every))

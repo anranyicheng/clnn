@@ -1,5 +1,57 @@
 (in-package #:nn)
 
+(defun %rnn-zeros (shape like)
+  "造一个与 LIKE 同 dtype 的全零张量（RNN 状态 / 累加器的起点）。
+
+   **v2.2 起它已经是个「带形状参数的 VT-ZEROS」**：计算域唯一（§2.0），
+   `(value-float-dtype anything)` 恒返回 :float64，所以本函数恒等于
+   `(vt-zeros shape :dtype :float64)`。
+
+   那为什么还留着？两个原因：
+     1. 14 个调用点的形状参数与 SIG 保持稳定，改的话 diff 全是噪音；
+     2. `LIKE` 参数是**一个不变量的书面记录**：「这个缓冲必须与某个真实输入
+        或上游梯度同 dtype」。将来若真要支持别的计算域，参照量的选择仍然
+        是唯一的判据 —— 而这条不变量在 v2.1 是踩过坑才立起来的。
+
+   历史（值得留着，因为它是「为什么不要多精度」的原始证据）：
+   v2.0 时代本函数要**按 LIKE 选 dtype**，因为要让 f32 模型的缓冲跟住 f32。
+   当时踩过两次坑：用 `(vt-zeros shape)` 会缺省造 f64（只升不降）；用
+   `(vt-zeros-like like)` 又只拷形状（LIKE 常是 (B,H) 而缓冲是 (B,T,H)）。
+   最后还要求「参照量必须是真正的输入或梯度，不能是 f64 累加器」——继承
+   累加器等于没改。这些坑合起来就是缺口 G-11。"
+  (vt-zeros shape :dtype (value-float-dtype (vt-dtype like))))
+
+(defvar *rnn-accumulate-grads* nil
+  "非 NIL 时 RNN-CELL 的 backward 把权重梯度**累加**到已有槽上。
+
+   默认 NIL（覆盖写），与 dense / conv2d / lstm / gru 保持同一条契约
+   （§5.1：一次 forward+backward 之后，grads 给的是「这一次反向算出的梯度」，
+   重复调用不得叠加）。
+
+   唯一需要累加的场合是 RNN-SEQUENCE：它只持有一个 cell，按时间步倒序反复
+   调用 cell 的 backward，权重梯度必须跨步累加。该层在自己的 backward 内部
+   动态绑定本变量为 T，并在循环开始前清空 cell 的梯度槽 —— 于是「跨时间步
+   累加」被封装在层内部，对外仍是「覆盖写」。")
+
+;;; ------------------------------------------------------------------
+;;; dtype 说明：本文件的计算链跟随输入/参数的浮点 dtype（f32 全链已通）
+;;; ------------------------------------------------------------------
+;;; 历史（契约文档 G-11）：本文件曾整体固定在 float64，即使传入 f32 参数与
+;;; f32 输入，rnn-cell / lstm / gru / rnn-sequence 的前向输出、dX、dw 全是
+;;; float64。原因有两处，缺一不可：
+;;;
+;;; 1) 状态/累加缓冲用 (VT-ZEROS (LIST BATCH HS)) 起始，缺省 :float64；
+;;;    它与 VT-MATMUL 的结果相加后整条门控链变宽，dtype 只升不降。
+;;; 2) 门控导数写成 (VT-- 1.0D0 X)。当时的 clvt 把 VT-- 的首个操作数无条件
+;;;    ENSURE-VT 成 0 维张量，绕过 NEP 50 的弱标量提升，于是
+;;;    「double 标量 − float32 张量」→ float64；而 (VT-- X 1.0D0) 仍是 f32。
+;;;
+;;; ② 已由上游 clvt 修正（CONVENTIONS §16.31.7：十一个算子补齐弱标量，
+;;; 二元提升恢复可交换），因此 `(VT-- 1.0D0 X)` 现在跟随 X 的 dtype，
+;;; 无需改写。① 只能在本文件解决：所有零张量起点一律经 %RNN-ZEROS 按
+;;; 参照张量的 dtype 构造，见下。约束是**参照张量必须是真正的输入
+;;; （x / grad-output）**，不能是某个 f64 累加器 —— 继承后者等于没改。
+
 (defclass rnn-cell (layer)
   ((input-size :initarg :input-size
 	       :reader rnn-input-size)
@@ -73,7 +125,7 @@
                 input))
          (batch (first (vt-shape x)))
          (h-prev (or (rnn-state l)
-                     (vt-zeros (list batch (rnn-hidden-size l)))))
+                     (%rnn-zeros (list batch (rnn-hidden-size l)) x)))
          (pre-act
            (vt-+ (vt-+ (vt-matmul x (vt-transpose (rnn-wih l)))
                        (vt-matmul h-prev (vt-transpose (rnn-whh l))))
@@ -115,12 +167,17 @@
          (dbih (vt-sum dh :axis 0))
          (dx (vt-matmul dh wih))
          (dh-prev (vt-matmul dh whh)))
-    (setf (rnn-dwih l)
-          (if (rnn-dwih l) (vt-+ (rnn-dwih l) dwih) dwih))
-    (setf (rnn-dwhh l)
-          (if (rnn-dwhh l) (vt-+ (rnn-dwhh l) dwhh) dwhh))
-    (setf (rnn-dbih l)
-          (if (rnn-dbih l) (vt-+ (rnn-dbih l) dbih) dbih))
+    ;; 梯度语义（§5.1）：默认覆盖写。只有 RNN-SEQUENCE 通过动态变量要求累加
+    ;; —— 它复用同一个 cell 走完整条序列，跨时间步必须叠加。
+    (flet ((put (slot value)
+             (setf (slot-value l slot)
+                   (if *rnn-accumulate-grads*
+                       (let ((old (slot-value l slot)))
+                         (if old (vt-+ old value) value))
+                       value))))
+      (put 'dwih dwih)
+      (put 'dwhh dwhh)
+      (put 'dbih dbih))
     (values dx dh-prev)))
 
 (defun reset-rnn-cell-state! (cell)
@@ -224,10 +281,10 @@
          (whh (lstm-weight-hh l))
          (bih (lstm-bias-ih l))
          (bhh (lstm-bias-hh l))
-         ;; 支持外部注入的初始状态，否则用零
-         (h (or (lstm-h-0 l) (vt-zeros (list batch hs))))
-         (c (or (lstm-c-0 l) (vt-zeros (list batch hs))))
-         (output (vt-zeros (list batch seq-len hs)))
+         ;; 支持外部注入的初始状态，否则用零（dtype 跟随输入）
+         (h (or (lstm-h-0 l) (%rnn-zeros (list batch hs) input)))
+         (c (or (lstm-c-0 l) (%rnn-zeros (list batch hs) input)))
+         (output (%rnn-zeros (list batch seq-len hs) input))
          (all-gates '()) (all-c '())
          (all-h '()) (all-x '()))
     (dotimes (i seq-len)
@@ -277,14 +334,14 @@
          (is (lstm-input-size l))
          (wih (lstm-weight-ih l))
          (whh (lstm-weight-hh l))
-         (dwih-acc (vt-zeros (list (* 4 hs) is)))
-         (dwhh-acc (vt-zeros (list (* 4 hs) hs)))
-         (dbih-acc (vt-zeros (list (* 4 hs))))
-         (dbhh-acc (vt-zeros (list (* 4 hs))))
-         (dh-next (vt-zeros (list batch hs)))
-         (dc-next (vt-zeros (list batch hs)))
-         (grad-input (vt-zeros (list batch seq-len is)))
-         (zero-h (vt-zeros (list batch hs)))
+         (dwih-acc (%rnn-zeros (list (* 4 hs) is) grad-output))
+         (dwhh-acc (%rnn-zeros (list (* 4 hs) hs) grad-output))
+         (dbih-acc (%rnn-zeros (list (* 4 hs)) grad-output))
+         (dbhh-acc (%rnn-zeros (list (* 4 hs)) grad-output))
+         (dh-next (%rnn-zeros (list batch hs) grad-output))
+         (dc-next (%rnn-zeros (list batch hs) grad-output))
+         (grad-input (%rnn-zeros (list batch seq-len is) grad-output))
+         (zero-h (%rnn-zeros (list batch hs) grad-output))
          ;; 使用用户提供的初始状态（若有）
          (h-0 (or (lstm-h-0 l) zero-h))
          (c-0 (or (lstm-c-0 l) zero-h)))
@@ -332,22 +389,10 @@
         (setf (vt-slice grad-input (list :all) (list idx) (list :all))
               (vt-matmul d-gates wih))
         (setf dc-next (vt-* dc f-gate))))
-    (setf (lstm-dweight-ih l)
-          (vt-+ (or (lstm-dweight-ih l)
-                    (vt-zeros (vt-shape dwih-acc)))
-                dwih-acc))
-    (setf (lstm-dweight-hh l)
-          (vt-+ (or (lstm-dweight-hh l)
-                    (vt-zeros (vt-shape dwhh-acc)))
-                dwhh-acc))
-    (setf (lstm-dbias-ih l)
-          (vt-+ (or (lstm-dbias-ih l)
-                    (vt-zeros (vt-shape dbih-acc)))
-                dbih-acc))
-    (setf (lstm-dbias-hh l)
-          (vt-+ (or (lstm-dbias-hh l)
-                    (vt-zeros (vt-shape dbhh-acc)))
-                dbhh-acc))
+    (setf (lstm-dweight-ih l) dwih-acc)
+    (setf (lstm-dweight-hh l) dwhh-acc)
+    (setf (lstm-dbias-ih l) dbih-acc)
+    (setf (lstm-dbias-hh l) dbhh-acc)
     (values grad-input
             (when (lstm-h-0 l) dh-next)
             (when (lstm-c-0 l) dc-next))))
@@ -443,8 +488,8 @@
                          `(,(* 2 hs) ,(* 3 hs)) (list :all)))
          (b-hn (vt-slice bhh
                          `(,(* 2 hs) ,(* 3 hs))))
-         (h (vt-zeros (list batch hs)))
-         (output (vt-zeros (list batch seq-len hs)))
+         (h (%rnn-zeros (list batch hs) input))
+         (output (%rnn-zeros (list batch seq-len hs) input))
          (all-r '()) (all-z '()) (all-n '())
          (all-h '()) (all-x '()) (all-hn-gate '()))
     (dotimes (i seq-len)
@@ -503,13 +548,13 @@
          (whh (gru-weight-hh l))
          (w-in (vt-slice wih `(,(* 2 hs) ,(* 3 hs)) (list :all)))
          (w-hn (vt-slice whh `(,(* 2 hs) ,(* 3 hs)) (list :all)))
-         (dwih-acc (vt-zeros (list (* 3 hs) is)))
-         (dwhh-acc (vt-zeros (list (* 3 hs) hs)))
-         (dbih-acc (vt-zeros (list (* 3 hs))))
-         (dbhh-acc (vt-zeros (list (* 3 hs))))
-         (dh-next (vt-zeros (list batch hs)))
-         (grad-input (vt-zeros (list batch seq-len is)))
-         (zero-h (vt-zeros (list batch hs))))
+         (dwih-acc (%rnn-zeros (list (* 3 hs) is) grad-output))
+         (dwhh-acc (%rnn-zeros (list (* 3 hs) hs) grad-output))
+         (dbih-acc (%rnn-zeros (list (* 3 hs)) grad-output))
+         (dbhh-acc (%rnn-zeros (list (* 3 hs)) grad-output))
+         (dh-next (%rnn-zeros (list batch hs) grad-output))
+         (grad-input (%rnn-zeros (list batch seq-len is) grad-output))
+         (zero-h (%rnn-zeros (list batch hs) grad-output)))
     (dotimes (i seq-len)
       (let* ((idx (- seq-len i 1))
              (r-t (nth idx all-r))
@@ -534,7 +579,7 @@
              (d-gates-rz (vt-concatenate -1
                                          dr-pre dz-pre)))
         ;; 1. Wih
-        (let ((full-dw (vt-zeros (list (* 3 hs) is))))
+        (let ((full-dw (%rnn-zeros (list (* 3 hs) is) dwih-acc)))
           (setf (vt-slice full-dw `(0 ,(* 2 hs)) (list :all))
                 (vt-matmul (vt-transpose d-gates-rz) x-t))
           (setf (vt-slice full-dw
@@ -542,7 +587,7 @@
                 (vt-matmul (vt-transpose dn-pre) x-t))
           (setf dwih-acc (vt-+ dwih-acc full-dw)))
         ;; 2. Whh
-        (let ((full-dwh (vt-zeros (list (* 3 hs) hs))))
+        (let ((full-dwh (%rnn-zeros (list (* 3 hs) hs) dwhh-acc)))
           (setf (vt-slice full-dwh `(0 ,(* 2 hs)) (list :all))
                 (vt-matmul (vt-transpose d-gates-rz) h-prev))
           (setf (vt-slice full-dwh
@@ -550,7 +595,7 @@
                 (vt-matmul (vt-transpose dhn-linear) h-prev))
           (setf dwhh-acc (vt-+ dwhh-acc full-dwh)))
         ;; 3. bih
-        (let ((full-db (vt-zeros (list (* 3 hs)))))
+        (let ((full-db (%rnn-zeros (list (* 3 hs)) dbih-acc)))
           (setf (vt-slice full-db `(0 ,(* 2 hs)))
                 (vt-sum d-gates-rz :axis 0))
           (setf (vt-slice full-db
@@ -558,7 +603,7 @@
                 (vt-sum dn-pre :axis 0))
           (setf dbih-acc (vt-+ dbih-acc full-db)))
         ;; 4. bhh
-        (let ((full-dbh (vt-zeros (list (* 3 hs)))))
+        (let ((full-dbh (%rnn-zeros (list (* 3 hs)) dbhh-acc)))
           (setf (vt-slice full-dbh `(0 ,(* 2 hs)))
                 (vt-sum d-gates-rz :axis 0))
           (setf (vt-slice full-dbh
@@ -577,22 +622,10 @@
                (dh-from-z (vt-* z-t dh)))
           (setf dh-next (vt-+ (vt-+ dh-from-rz dh-from-n)
                               dh-from-z)))))
-    (setf (gru-dweight-ih l)
-          (vt-+ (or (gru-dweight-ih l)
-                    (vt-zeros (vt-shape dwih-acc)))
-                dwih-acc))
-    (setf (gru-dweight-hh l)
-          (vt-+ (or (gru-dweight-hh l)
-                    (vt-zeros (vt-shape dwhh-acc)))
-                dwhh-acc))
-    (setf (gru-dbias-ih l)
-          (vt-+ (or (gru-dbias-ih l)
-                    (vt-zeros (vt-shape dbih-acc)))
-                dbih-acc))
-    (setf (gru-dbias-hh l)
-          (vt-+ (or (gru-dbias-hh l)
-                    (vt-zeros (vt-shape dbhh-acc)))
-                dbhh-acc))
+    (setf (gru-dweight-ih l) dwih-acc)
+    (setf (gru-dweight-hh l) dwhh-acc)
+    (setf (gru-dbias-ih l) dbih-acc)
+    (setf (gru-dbias-hh l) dbhh-acc)
     grad-input))
 
 (defmethod params ((l gru))
@@ -667,9 +700,9 @@
          (seq-len (second shape))
          (cell (rnn-seq-cell l))
          (hs (rnn-hidden-size cell))
-         (output (vt-zeros (list batch seq-len hs))))
+         (output (%rnn-zeros (list batch seq-len hs) input)))
     (ensure-rnn-cell-params cell)
-    (let ((h-prev (vt-zeros (list batch hs)))
+    (let ((h-prev (%rnn-zeros (list batch hs) input))
           (xs '()) (h-preves '()) (hs-list '()))
       (dotimes (i seq-len)                                     
         (let* ((x-t (vt-slice input  (list :all) (list i) (list :all)))
@@ -693,22 +726,29 @@
          (batch (first (vt-shape (first xs))))
          (D (rnn-input-size cell))
          (H (rnn-hidden-size cell))
-         (grad-input (vt-zeros (list batch seq-len D)))
-         (dh-next (vt-zeros (list batch H))))
-    (dotimes (i seq-len)
-      (let* ((idx  (- seq-len i 1))
-             (x-t  (nth idx xs))
-             (h-pv (nth idx h-preves))
-             (h-t  (nth idx hs-list))
-             (g-t  (vt-slice grad-output (list :all) (list idx) (list :all)))) ; idx
-        (setf (rnn-input-cache  cell) x-t)
-        (setf (rnn-h-prev-cache cell) h-pv)
-        (setf (rnn-h-cache      cell) h-t)
-        (let ((g-combined (vt-+ g-t dh-next)))
-          (multiple-value-bind (dx dh-prev)
-              (backward cell g-combined)
-            (setf (vt-slice grad-input (list :all) (list idx) (list :all)) dx) ; idx
-            (setf dh-next dh-prev)))))
+         (grad-input (%rnn-zeros (list batch seq-len D) grad-output))
+         (dh-next (%rnn-zeros (list batch H) grad-output)))
+    ;; 本层内部必须跨时间步累加 cell 的权重梯度（同一 cell 被调 T 次）；
+    ;; 但跨「调用」不累加：先把 cell 的梯度槽清空，再绑 *RNN-ACCUMULATE-GRADS*，
+    ;; 这样第二次 backward 的结果与第一次逐位相同（§5.1 的覆盖写语义）。
+    (setf (rnn-dwih cell) nil
+          (rnn-dwhh cell) nil
+          (rnn-dbih cell) nil)
+    (let ((*rnn-accumulate-grads* t))
+      (dotimes (i seq-len)
+        (let* ((idx  (- seq-len i 1))
+               (x-t  (nth idx xs))
+               (h-pv (nth idx h-preves))
+               (h-t  (nth idx hs-list))
+               (g-t  (vt-slice grad-output (list :all) (list idx) (list :all)))) ; idx
+          (setf (rnn-input-cache  cell) x-t)
+          (setf (rnn-h-prev-cache cell) h-pv)
+          (setf (rnn-h-cache      cell) h-t)
+          (let ((g-combined (vt-+ g-t dh-next)))
+            (multiple-value-bind (dx dh-prev)
+                (backward cell g-combined)
+              (setf (vt-slice grad-input (list :all) (list idx) (list :all)) dx) ; idx
+              (setf dh-next dh-prev))))))
     grad-input))
 
 

@@ -291,7 +291,7 @@
               ;; 反向 + 参数更新
               (zero-grad! model)                                      ; 清空梯度
               (backward model grad)                                   ; 反向传播
-              (optimizer-step optimizer (params model) (grads model)) ; 更新参数
+              (update! model optimizer) ; 更新参数
               (clear-step-caches! model))))                           ; 清空缓存
 
         (format t "Epoch ~2d/~2d  loss = ~,4f  acc = ~,4f~%"
